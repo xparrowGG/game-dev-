@@ -152,6 +152,6 @@ public class CarHUD : MonoBehaviour
         var st = new GUIStyle(hintStyle);
         st.normal.textColor = new Color(1, 1, 1, alpha);
         GUI.Label(new Rect(panel.x + 16 * s, panel.y + 12 * s, panel.width - 32 * s, panel.height - 24 * s),
-            "W / ↑   accelerate\nS / ↓   brake / reverse\nA D / ← →   steer\nSpace   handbrake\nShift   boost\nC   camera view\nR   back on track   ·   Enter   restart\nH   show this help", st);
+            "W / ↑   accelerate\nS / ↓   brake / reverse\nA D / ← →   steer\nSpace   handbrake\nShift   boost\nC   camera: TV pod / chase / cockpit\nR   back on track   ·   Enter   restart\nH   show this help", st);
     }
 }

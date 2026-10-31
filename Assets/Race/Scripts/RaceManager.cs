@@ -36,6 +36,8 @@ public class RaceManager : MonoBehaviour
     int crossings, lapsTimed;
     float prevD, lapStartTime, lastLap = -1f, bestLap = -1f, resultsTimer;
     readonly bool[] checkpoints = new bool[3];
+    readonly List<Vector3> trail = new List<Vector3>();
+    float trailTimer;
     readonly List<Racer> finishOrder = new List<Racer>();
 
     Texture2D tex;
@@ -83,6 +85,14 @@ public class RaceManager : MonoBehaviour
         goBannerTimer -= Time.deltaTime;
         winnerBannerTimer -= Time.deltaTime;
         resultsTimer -= Time.deltaTime;
+
+        trailTimer -= Time.deltaTime;
+        if (trailTimer <= 0f)
+        {
+            trailTimer = 0.15f;
+            trail.Add(player.transform.position);
+            if (trail.Count > 45) trail.RemoveAt(0);
+        }
         if (state == State.Countdown)
         {
             countdown += Time.deltaTime;
@@ -160,6 +170,12 @@ public class RaceManager : MonoBehaviour
         r.finishTime = raceTime;
         finishOrder.Add(r);
         if (r.isPlayer) resultsTimer = 10f;
+        else
+        {
+            // Park beside the track past the line: first finisher furthest along, the rest behind
+            int aiFinished = finishOrder.FindAll(f => !f.isPlayer).Count;
+            r.ai.parkProgress = laps * track.length + 95f - 11f * (aiFinished - 1);
+        }
         if (winner == null) { winner = r; winnerBannerTimer = 5f; }
     }
 
@@ -223,7 +239,7 @@ public class RaceManager : MonoBehaviour
         var standings = Standings();
 
         DrawTopPanel(s, standings);
-        DrawMinimap(s);
+        DrawMinimap(s, standings);
         DrawStandings(s, standings);
 
         if (state == State.Countdown) DrawStartLights(s);
@@ -288,31 +304,101 @@ public class RaceManager : MonoBehaviour
         return new Vector2(area.x + (p.x - mapMinX) * mapScale * area.width, area.y + (mapMaxZ - p.z) * mapScale * area.height);
     }
 
-    void DrawMinimap(float s)
-    {
-        float size = 250 * s;
-        Rect panel = new Rect(Screen.width - size - 16 * s, 16 * s, size, size);
-        Fill(panel, new Color(0.05f, 0.06f, 0.09f, 0.72f), 14 * s);
-        Rect area = new Rect(panel.x + 18 * s, panel.y + 18 * s, size - 36 * s, size - 36 * s);
+    static readonly Color[] SectorColors = { new Color(1f, 0.3f, 0.35f), new Color(0.25f, 0.8f, 1f), new Color(1f, 0.82f, 0.2f) };
+    static readonly Color PlayerBlue = new Color(0.15f, 0.45f, 1f);
 
-        float dot = 5 * s;
-        for (int i = 0; i < track.Count; i += 2)
+    // Broadcast-style map: thick track ribbon with coloured sectors, checkered start line,
+    // numbered position markers, the player's heading needle, a fading trail and lap progress.
+    void DrawMinimap(float s, List<Racer> standings)
+    {
+        float w = 280 * s, h = 300 * s;
+        Rect panel = new Rect(Screen.width - w - 16 * s, 16 * s, w, h);
+        Fill(panel, new Color(0.04f, 0.05f, 0.08f, 0.82f), 16 * s);
+        Fill(panel, new Color(1f, 1f, 1f, 0.12f), 16 * s, 1.5f * s);
+
+        // Header
+        var header = new GUIStyle(small) { alignment = TextAnchor.MiddleLeft, fontStyle = FontStyle.Bold };
+        GUI.Label(new Rect(panel.x + 16 * s, panel.y + 8 * s, w, 20 * s), "CIRCUIT MAP", header);
+        for (int k = 0; k < 3; k++)
+        {
+            Rect chip = new Rect(panel.xMax - (3 - k) * 30 * s - 10 * s, panel.y + 12 * s, 24 * s, 12 * s);
+            Fill(chip, SectorColors[k], 4 * s);
+            var cs = new GUIStyle(small) { fontSize = Mathf.RoundToInt(9 * s), fontStyle = FontStyle.Bold };
+            cs.normal.textColor = Color.black;
+            GUI.Label(chip, "S" + (k + 1), cs);
+        }
+
+        Rect area = new Rect(panel.x + 24 * s, panel.y + 40 * s, w - 48 * s, w - 48 * s);
+
+        // Track: dark outer ribbon, then sector-coloured centre line
+        float outer = 13 * s, inner = 5 * s;
+        for (int i = 0; i < track.Count; i++)
         {
             Vector2 m = MapPoint(track.points[i], area);
-            Fill(new Rect(m.x - dot / 2, m.y - dot / 2, dot, dot), new Color(0.85f, 0.85f, 0.9f, 0.85f), dot / 2);
+            Fill(new Rect(m.x - outer / 2, m.y - outer / 2, outer, outer), new Color(0.16f, 0.17f, 0.2f, 1f), outer / 2);
         }
-        Vector2 start = MapPoint(track.points[0], area);
-        Fill(new Rect(start.x - 2 * s, start.y - 7 * s, 4 * s, 14 * s), new Color(1f, 0.85f, 0.2f));
+        for (int i = 0; i < track.Count; i++)
+        {
+            Vector2 m = MapPoint(track.points[i], area);
+            Color c = SectorColors[Mathf.Min(2, i * 3 / track.Count)];
+            Fill(new Rect(m.x - inner / 2, m.y - inner / 2, inner, inner), c, inner / 2);
+        }
 
+        // Checkered start/finish line across the track
+        Vector2 start = MapPoint(track.points[0], area);
+        Vector3 t0 = track.TangentAt(0);
+        Matrix4x4 saved = GUI.matrix;
+        GUIUtility.RotateAroundPivot(Mathf.Atan2(t0.x, t0.z) * Mathf.Rad2Deg + 90f, start);
+        for (int k = 0; k < 4; k++)
+            for (int row = 0; row < 2; row++)
+                Fill(new Rect(start.x - 8 * s + k * 4 * s, start.y - 4 * s + row * 4 * s, 4 * s, 4 * s), (k + row) % 2 == 0 ? Color.white : Color.black);
+        GUI.matrix = saved;
+
+        // Player trail
+        for (int i = 0; i < trail.Count; i++)
+        {
+            Vector2 m = MapPoint(trail[i], area);
+            float a = (i + 1f) / trail.Count;
+            float d = (2f + 3f * a) * s;
+            Fill(new Rect(m.x - d / 2, m.y - d / 2, d, d), new Color(PlayerBlue.r, PlayerBlue.g, PlayerBlue.b, a * 0.8f), d / 2);
+        }
+
+        // Rivals with their race position
+        var num = new GUIStyle(small) { fontSize = Mathf.RoundToInt(10 * s), fontStyle = FontStyle.Bold };
+        num.normal.textColor = Color.black;
         foreach (var r in racers)
         {
             if (r.isPlayer) continue;
             Vector2 m = MapPoint(r.tr.position, area);
-            Fill(new Rect(m.x - 5 * s, m.y - 5 * s, 10 * s, 10 * s), r.color, 5 * s);
+            float d = 16 * s;
+            Fill(new Rect(m.x - d / 2 - 1.5f * s, m.y - d / 2 - 1.5f * s, d + 3 * s, d + 3 * s), new Color(0, 0, 0, 0.8f), d);
+            Fill(new Rect(m.x - d / 2, m.y - d / 2, d, d), r.color, d / 2);
+            GUI.Label(new Rect(m.x - d / 2, m.y - d / 2, d, d), (standings.IndexOf(r) + 1).ToString(), num);
         }
+
+        // Player: pulsing ring, heading needle, numbered marker
         Vector2 pm = MapPoint(player.transform.position, area);
-        Fill(new Rect(pm.x - 8 * s, pm.y - 8 * s, 16 * s, 16 * s), Color.white, 8 * s);
-        Fill(new Rect(pm.x - 5 * s, pm.y - 5 * s, 10 * s, 10 * s), new Color(0.15f, 0.4f, 1f), 5 * s);
+        float pulse = (22f + 6f * Mathf.Sin(Time.unscaledTime * 6f)) * s;
+        Fill(new Rect(pm.x - pulse / 2, pm.y - pulse / 2, pulse, pulse), new Color(1f, 1f, 1f, 0.6f), pulse / 2, 2f * s);
+        Vector3 f = player.transform.forward;
+        GUIUtility.RotateAroundPivot(Mathf.Atan2(f.x, f.z) * Mathf.Rad2Deg, pm);
+        Fill(new Rect(pm.x - 2.5f * s, pm.y - 20 * s, 5 * s, 12 * s), Color.white, 2 * s);
+        GUI.matrix = saved;
+        float pd = 18 * s;
+        Fill(new Rect(pm.x - pd / 2 - 2 * s, pm.y - pd / 2 - 2 * s, pd + 4 * s, pd + 4 * s), Color.white, pd);
+        Fill(new Rect(pm.x - pd / 2, pm.y - pd / 2, pd, pd), PlayerBlue, pd / 2);
+        var pnum = new GUIStyle(num);
+        pnum.normal.textColor = Color.white;
+        GUI.Label(new Rect(pm.x - pd / 2, pm.y - pd / 2, pd, pd), (standings.IndexOf(playerRacer) + 1).ToString(), pnum);
+
+        // Lap progress bar, coloured by the sector you're in
+        float lapFrac = Mathf.Clamp01(prevD / track.length);
+        if (crossings == 0) lapFrac = 0f;
+        Rect bar = new Rect(panel.x + 16 * s, panel.yMax - 22 * s, w - 32 * s, 8 * s);
+        Fill(bar, new Color(1f, 1f, 1f, 0.12f), 4 * s);
+        Fill(new Rect(bar.x, bar.y, bar.width * lapFrac, bar.height), SectorColors[Mathf.Min(2, (int)(lapFrac * 3f))], 4 * s);
+        for (int k = 1; k < 3; k++)
+            Fill(new Rect(bar.x + bar.width * k / 3f - 1 * s, bar.y - 2 * s, 2 * s, bar.height + 4 * s), new Color(1f, 1f, 1f, 0.5f));
     }
 
     void DrawStandings(float s, List<Racer> standings)

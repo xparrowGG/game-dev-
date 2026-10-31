@@ -32,6 +32,10 @@ public static class RaceTrackBuilder
         ("S. Nakamura",  new Color(1f, 0.5f, 0.05f),    50f, 29f),
     };
 
+    static readonly Color[] RivalAccents = { Color.white, new Color(0.08f, 0.08f, 0.1f), Color.white, new Color(0.1f, 0.15f, 0.35f) };
+    static readonly Color[] RivalHelmets = { Color.white, new Color(0.9f, 0.2f, 0.2f), new Color(1f, 0.85f, 0.1f), Color.white };
+    static readonly Color[] RivalStripes = { new Color(0.9f, 0.1f, 0.1f), new Color(1f, 0.85f, 0.1f), Color.white, new Color(0.9f, 0.1f, 0.1f) };
+
     static Shader shader;
     static System.Random rng;
     static readonly Dictionary<string, Material> mats = new Dictionary<string, Material>();
@@ -62,6 +66,7 @@ public static class RaceTrackBuilder
 
         Box("Ground", root, new Vector3(0, -0.5f, 0), Quaternion.identity, new Vector3(600, 1, 600), Mat("Grass", new Color(0.3f, 0.5f, 0.22f)), true);
         BuildSurfaces(root, track);
+        BuildBarriers(root, track);
         BuildBounds(root);
         BuildStartLine(root, track);
         var lights = BuildGantry(root, track, out var lightOff);
@@ -196,7 +201,7 @@ public static class RaceTrackBuilder
         EditorBuildSettings.scenes = scenes.ToArray();
     }
 
-    // Unused since the track became open: kept for a walled circuit.
+    // Red/white barrier walls on both sides of the circuit (solid mesh colliders).
     static void BuildBarriers(GameObject root, RaceTrack t)
     {
         var parent = Child("Barriers", root);
@@ -341,45 +346,107 @@ public static class RaceTrackBuilder
 
     static GameObject SetupPlayer(RaceTrack t)
     {
-        var car = GameObject.Find("SportsSedan");
-        if (car == null) { SportsSedanBuilder.Build(); car = GameObject.Find("SportsSedan"); }
-        var slot = GridSlot(t, 2);
-        Undo.RecordObject(car.transform, "Place player car");
+        // Replace the old road car (and any previous player F1 car) with a fresh F1 car
+        foreach (var name in new[] { "SportsSedan", "F1_Player" })
+        {
+            var old = GameObject.Find(name);
+            if (old != null) Undo.DestroyObjectImmediate(old);
+        }
+        var car = F1CarBuilder.Build("F1_Player", new Color(0.08f, 0.22f, 0.75f), Color.white, new Color(1f, 0.85f, 0.1f), new Color(1f, 0.85f, 0.1f));
+        Undo.RegisterCreatedObjectUndo(car, "Create player car");
+        var slot = GridSlot(t, 0);   // pole position
         car.transform.SetPositionAndRotation(slot.pos, slot.rot);
 
-        var rb = car.GetComponent<Rigidbody>();
-        if (rb == null) rb = Undo.AddComponent<Rigidbody>(car);
-        rb.mass = 1400f;
+        var rb = car.AddComponent<Rigidbody>();
+        rb.mass = 800f;
         rb.interpolation = RigidbodyInterpolation.Interpolate;
         rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
         rb.constraints = RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationZ;
         var pm = AssetDatabase.LoadAssetAtPath<PhysicsMaterial>("Assets/City/Materials/CarBody.asset");
         if (pm != null) car.GetComponent<BoxCollider>().sharedMaterial = pm;
-        if (car.GetComponent<CarController>() == null) Undo.AddComponent<CarController>(car);
-        if (car.GetComponent<CarHUD>() == null) Undo.AddComponent<CarHUD>(car);
+        CreateSparks(car);
+        car.AddComponent<CarController>().wheelRadius = 0.33f;
+        car.AddComponent<CarHUD>();
         return car;
+    }
+
+    // Spark burst emitted by CarController at impact points (world-space, additive streaks).
+    static void CreateSparks(GameObject car)
+    {
+        var go = new GameObject("Sparks");
+        go.transform.SetParent(car.transform, false);
+        var ps = go.AddComponent<ParticleSystem>();
+        ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+
+        var main = ps.main;
+        main.playOnAwake = false;
+        main.loop = false;
+        main.duration = 1f;
+        main.startLifetime = new ParticleSystem.MinMaxCurve(0.25f, 0.6f);
+        main.startSpeed = new ParticleSystem.MinMaxCurve(4f, 11f);
+        main.startSize = new ParticleSystem.MinMaxCurve(0.04f, 0.09f);
+        main.startColor = new ParticleSystem.MinMaxGradient(new Color(1f, 0.95f, 0.6f), new Color(1f, 0.55f, 0.1f));
+        main.gravityModifier = 1.5f;
+        main.simulationSpace = ParticleSystemSimulationSpace.World;
+        main.maxParticles = 400;
+
+        var emission = ps.emission;
+        emission.rateOverTime = 0f;
+        var shape = ps.shape;
+        shape.shapeType = ParticleSystemShapeType.Sphere;
+        shape.radius = 0.15f;
+        var fade = ps.colorOverLifetime;
+        fade.enabled = true;
+        var grad = new Gradient();
+        grad.SetKeys(new[] { new GradientColorKey(Color.white, 0f), new GradientColorKey(new Color(1f, 0.3f, 0.05f), 1f) },
+                     new[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(0f, 1f) });
+        fade.color = grad;
+
+        var r = go.GetComponent<ParticleSystemRenderer>();
+        r.renderMode = ParticleSystemRenderMode.Stretch;
+        r.velocityScale = 0.04f;
+        r.lengthScale = 1.5f;
+        r.sharedMaterial = SparkMaterial();
+    }
+
+    static Material SparkMaterial()
+    {
+        const string path = Dir + "/Materials/Sparks.mat";
+        var m = AssetDatabase.LoadAssetAtPath<Material>(path);
+        if (m != null) return m;
+        var sh = Shader.Find("Universal Render Pipeline/Particles/Unlit");
+        if (sh == null) sh = Shader.Find("Particles/Standard Unlit");
+        m = new Material(sh);
+        if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", Color.white);
+        // Transparent, additive blending so sparks glow
+        if (m.HasProperty("_Surface")) m.SetFloat("_Surface", 1f);
+        if (m.HasProperty("_Blend")) m.SetFloat("_Blend", 2f);
+        m.SetOverrideTag("RenderType", "Transparent");
+        m.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.One);
+        m.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.One);
+        m.SetInt("_ZWrite", 0);
+        m.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+        m.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+        AssetDatabase.CreateAsset(m, path);
+        return m;
     }
 
     static RaceAI[] BuildRivals(GameObject root, RaceTrack t, GameObject player)
     {
         var parent = Child("Rivals", root);
         var result = new RaceAI[Rivals.Length];
-        int[] slots = { 0, 1, 3, 4 };
+        int[] slots = { 1, 2, 3, 4 };   // player starts on pole (slot 0)
         for (int i = 0; i < Rivals.Length; i++)
         {
             var info = Rivals[i];
             var slot = GridSlot(t, slots[i]);
-            var car = Object.Instantiate(player, slot.pos, slot.rot, parent.transform);
-            car.name = "Rival_" + info.name;
-            Object.DestroyImmediate(car.GetComponent<CarHUD>());
-            Object.DestroyImmediate(car.GetComponent<CarController>());
-            var rb = car.GetComponent<Rigidbody>();
+            var car = F1CarBuilder.Build("Rival_" + info.name, info.color, RivalAccents[i], RivalHelmets[i], RivalStripes[i]);
+            car.transform.SetParent(parent.transform, false);
+            car.transform.SetPositionAndRotation(slot.pos, slot.rot);
+            // Rivals are solid kinematic bodies; CarController.OnCollisionEnter shares the impact with them
+            var rb = car.AddComponent<Rigidbody>();
             rb.isKinematic = true;
-            rb.constraints = RigidbodyConstraints.None;
-
-            var paint = Mat("RivalPaint" + i, info.color, 0.7f, 0.85f);
-            foreach (var r in car.GetComponentsInChildren<MeshRenderer>())
-                if (r.sharedMaterial != null && r.sharedMaterial.name == "Paint") r.sharedMaterial = paint;
+            rb.interpolation = RigidbodyInterpolation.Interpolate;
 
             var ai = car.AddComponent<RaceAI>();
             ai.driverName = info.name;
@@ -405,6 +472,10 @@ public static class RaceTrackBuilder
         var follow = cam.GetComponent<ChaseCamera>();
         if (follow == null) follow = Undo.AddComponent<ChaseCamera>(cam.gameObject);
         follow.target = player.transform;
+        follow.distance = 6.5f;
+        follow.height = 2.1f;
+        follow.cockpitOffset = new Vector3(0, 0.95f, 0.2f);
+        cam.nearClipPlane = 0.2f;
         cam.transform.position = player.transform.position - player.transform.forward * 7f + Vector3.up * 2.6f;
         cam.transform.LookAt(player.transform.position + Vector3.up * 1.2f);
     }

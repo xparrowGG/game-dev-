@@ -13,14 +13,29 @@ public class RaceAI : MonoBehaviour
     public float braking = 15f;
     public float lane;                 // sideways offset from centreline
     public float progress;             // total distance from the start line (negative on the grid)
+    public float parkLane = -10f;      // after finishing, pull onto the run-off inside the barrier
+
+    [System.NonSerialized] public float parkProgress = float.NaN;   // where to stop after the race
 
     [System.NonSerialized] public RaceManager manager;
     public float Speed { get; private set; }
+    public Vector3 Velocity => transform.forward * Speed + transform.right * lateralVel;
 
     static readonly float[] Lanes = { -4.5f, -1.5f, 1.5f, 4.5f };
     Rigidbody rb;
     Transform[] wheels = new Transform[4];
     float laneTarget, wheelSpin;
+    float lateralVel, wobble, wobbleVel, recoverTimer;   // crash reaction
+
+    // Called by the player's car on contact: dv is this car's change in velocity.
+    public void ApplyImpact(Vector3 dv, Vector3 point)
+    {
+        Speed = Mathf.Max(0f, Speed + Vector3.Dot(dv, transform.forward));
+        lateralVel += Vector3.Dot(dv, transform.right);
+        Vector3 lever = point - transform.position; lever.y = 0;
+        wobbleVel += Mathf.Clamp(Vector3.Cross(lever, dv).y * 9f, -200f, 200f);
+        recoverTimer = Mathf.Clamp(dv.magnitude * 0.25f, 0.5f, 2.5f);
+    }
 
     void Awake()
     {
@@ -35,9 +50,19 @@ public class RaceAI : MonoBehaviour
     {
         var track = manager.track;
         float desired = 0f;
-        if (racing)
+        float laneSpeed = 2.5f;
+        if (finished)
         {
-            desired = finished ? 18f : maxSpeed * skill;
+            // Cool down, pull off to the side and stop at the parking spot
+            float remaining = float.IsNaN(parkProgress) ? 0f : parkProgress - progress;
+            desired = Mathf.Min(22f, Mathf.Sqrt(2f * 7f * Mathf.Max(0f, remaining)));
+            if (remaining < 0.3f) desired = 0f;
+            laneTarget = parkLane;
+            laneSpeed = 3.5f;
+        }
+        else if (racing)
+        {
+            desired = maxSpeed * skill;
             // Brake early enough for the tightest corner in the next 80 m
             for (float ahead = 0f; ahead <= 80f; ahead += 8f)
             {
@@ -47,15 +72,26 @@ public class RaceAI : MonoBehaviour
             desired = Mathf.Min(desired, AvoidTraffic());
         }
 
+        // After being hit: knocked sideways and twisted, then the driver gathers it up and rejoins
+        if (recoverTimer > 0f)
+        {
+            recoverTimer -= dt;
+            desired = Mathf.Min(desired, 14f);
+        }
+        lane = Mathf.Clamp(lane + lateralVel * dt, -10.8f, 10.8f);   // stay inside the barriers
+        lateralVel = Mathf.MoveTowards(lateralVel, 0f, 10f * dt);
+        wobbleVel += (-wobble * 30f - wobbleVel * 6f) * dt;
+        wobble += wobbleVel * dt;
+
         Speed = Mathf.MoveTowards(Speed, desired, (desired < Speed ? braking : acceleration) * dt);
-        lane = Mathf.MoveTowards(lane, laneTarget, 2.5f * dt);
+        if (Speed > 0.5f && Mathf.Abs(lateralVel) < 0.5f) lane = Mathf.MoveTowards(lane, laneTarget, laneSpeed * dt);
         progress += Speed * dt;
 
         Vector3 pos = track.PointAt(progress) + track.RightAt(progress) * lane;
         pos.y = 0.02f;
         if (rb == null) rb = GetComponent<Rigidbody>();
         rb.MovePosition(pos);
-        rb.MoveRotation(Quaternion.LookRotation(track.TangentAt(progress), Vector3.up));
+        rb.MoveRotation(Quaternion.LookRotation(track.TangentAt(progress), Vector3.up) * Quaternion.Euler(0, wobble, 0));
     }
 
     float AvoidTraffic()
