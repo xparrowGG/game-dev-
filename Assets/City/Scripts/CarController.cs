@@ -18,6 +18,10 @@ public class CarController : MonoBehaviour
     public float turnSpeedHigh = 40f;   // deg/s at top speed
     public float wheelRadius = 0.34f;
 
+    public bool inputEnabled = true;             // false holds the car (e.g. on the start grid)
+    public float speedMultiplier = 1f;           // < 1 when off track
+    public System.Action onRespawnRequested;     // overrides the R key respawn when set
+
     public float Speed { get; private set; }            // signed, m/s
     public float SpeedKmh => Mathf.Abs(Speed) * 3.6f;
     public float DistanceMeters { get; private set; }
@@ -77,11 +81,16 @@ public class CarController : MonoBehaviour
         reset = Input.GetKeyDown(KeyCode.R);
         resetTrip = Input.GetKeyDown(KeyCode.T);
 #endif
+        if (!inputEnabled) { v = 0; h = 0; boost = false; handbrake = true; reset = false; }
         vertical = Mathf.Clamp(v, -1f, 1f);
         horizontal = Mathf.Clamp(h, -1f, 1f);
         Boosting = boost && vertical > 0;
 
-        if (reset) Respawn();
+        if (reset)
+        {
+            if (onRespawnRequested != null) onRespawnRequested();
+            else Respawn();
+        }
         if (resetTrip) { DistanceMeters = 0; TripTime = 0; TopSpeedKmh = 0; }
         AnimateWheels();
     }
@@ -96,7 +105,7 @@ public class CarController : MonoBehaviour
         float actual = Vector3.Dot(rb.linearVelocity, fwd);
         if (Mathf.Abs(Speed) - Mathf.Abs(actual) > 3f) Speed = actual;
 
-        float top = Boosting ? boostSpeed : maxSpeed;
+        float top = (Boosting ? boostSpeed : maxSpeed) * speedMultiplier;
         if (vertical > 0)
             Speed = Speed < -0.1f ? Mathf.MoveTowards(Speed, 0, brakeForce * dt)
                                   : Mathf.MoveTowards(Speed, top, acceleration * vertical * (Boosting ? 1.5f : 1f) * dt);
@@ -132,14 +141,16 @@ public class CarController : MonoBehaviour
         }
     }
 
-    void Respawn()
+    void Respawn() => Teleport(spawnPos, spawnRot);
+
+    public void Teleport(Vector3 pos, Quaternion rot)
     {
         Speed = 0;
         rb.linearVelocity = Vector3.zero;
-        rb.position = spawnPos;
-        rb.rotation = spawnRot;
-        transform.SetPositionAndRotation(spawnPos, spawnRot);
-        lastPos = spawnPos;
+        rb.position = pos;
+        rb.rotation = rot;
+        transform.SetPositionAndRotation(pos, rot);
+        lastPos = pos;
     }
 
     void AnimateWheels()
