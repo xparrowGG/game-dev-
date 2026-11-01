@@ -371,7 +371,7 @@ public static class RaceTrackBuilder
     }
 
     // Spark burst emitted by CarController at impact points (world-space, additive streaks).
-    static void CreateSparks(GameObject car)
+    public static void CreateSparks(GameObject car)
     {
         var go = new GameObject("Sparks");
         go.transform.SetParent(car.transform, false);

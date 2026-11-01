@@ -9,7 +9,7 @@ using UnityEngine.InputSystem;
 // Crashes: impacts bounce the car off (momentum is shared with other cars), off-centre hits spin it,
 // the car slides until the tyres regain grip, sparks fly, and a hard frontal hit breaks off the front wing.
 [RequireComponent(typeof(Rigidbody))]
-public class CarController : MonoBehaviour
+public class CarController : VehicleBase
 {
     public float maxSpeed = 50f;        // m/s (~180 km/h)
     public float boostSpeed = 66f;      // m/s (~240 km/h)
@@ -35,19 +35,7 @@ public class CarController : MonoBehaviour
     public float tyreGrip = 12f;             // how fast a sideways slide is caught (m/s²)
     public float wingBreakSpeed = 13f;       // frontal impact speed (m/s) that breaks off the front wing
 
-    public bool inputEnabled = true;             // false holds the car (e.g. on the start grid)
-    public float speedMultiplier = 1f;           // < 1 when off track
-    public System.Action onRespawnRequested;     // overrides the R key respawn when set
-
-    public float Speed { get; private set; }            // signed, m/s
-    public float SpeedKmh => Mathf.Abs(Speed) * 3.6f;
-    public float DistanceMeters { get; private set; }
-    public float TopSpeedKmh { get; private set; }
-    public float TripTime { get; private set; }
-    public bool Boosting { get; private set; }
     public bool FrontWingLost { get; private set; }
-    public float LastImpactStrength { get; private set; }
-    public float LastImpactTime { get; private set; } = -1f;
 
     Rigidbody rb;
     Collider bodyCollider;
@@ -274,7 +262,7 @@ public class CarController : MonoBehaviour
 
     void Respawn() => Teleport(spawnPos, spawnRot);
 
-    public void Teleport(Vector3 pos, Quaternion rot)
+    public override void Teleport(Vector3 pos, Quaternion rot)
     {
         Speed = 0;
         slide = Vector3.zero;

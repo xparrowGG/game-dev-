@@ -23,12 +23,12 @@ public class ChaseCamera : MonoBehaviour
     public float tvPodPitch = 6f;                                    // degrees looking down
 
     Camera cam;
-    CarController car;
+    VehicleBase car;
 
     void Start()
     {
         cam = GetComponent<Camera>();
-        if (target != null) car = target.GetComponent<CarController>();
+        if (target != null) car = target.GetComponent<VehicleBase>();
     }
 
     void LateUpdate()
