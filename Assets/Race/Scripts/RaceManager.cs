@@ -24,17 +24,46 @@ public class RaceManager : MonoBehaviour
     public float pitEntryDistance = -1f; // > 0: finished AI cars leave the track this far past the line
     public float pitLaneOffset = 10f;
 
+    [Header("Pit lane (Monaco)")]
+    public float pitEntryStart = -168f, pitEntryEnd = -140f;   // gap in the pit wall where cars turn in
+    public float pitExitStart = 112f, pitExitEnd = 142f;       // gap where cars rejoin
+    public float pitSpeed = 22.2f;                             // 80 km/h limiter
+    public float[] boxDistances;                               // where each team's car stops, along the track
+    public PitBox[] pitBoxes;
+    public MarshalPost[] marshalPosts;
+
+    [Header("Audio")]
+    public EngineAudio rivalAudio;       // voices the nearest rival car (3D, with Doppler)
+    public AmbientAudio ambient;
+    EngineAudio playerAudio;
+
+    public bool HasPitLane => boxDistances != null && boxDistances.Length > 0;
+    public bool MandatoryStop => HasPitLane && laps >= 3;
+    public float BoxDistance(int team) => boxDistances[Mathf.Clamp(team, 0, boxDistances.Length - 1)];
+    public static bool InWindow(float d, float a, float b, float length) => Mathf.Repeat(d - a, length) <= Mathf.Repeat(b - a, length);
+
     public class Racer
     {
         public string name, code;
         public Color color;
         public int team;
-        public bool isPlayer, retired;
+        public bool isPlayer, retired, tyresHidden;
         public RaceAI ai;
         public Transform tr;
-        public float progress, prevProgress, lateral, speed, finishTime;
+        public float progress, prevProgress, lateral, speed, finishTime, penalty;
         public bool finished;
     }
+
+    // Player tyres and pit stop
+    enum PitPhase { None, Approach, Stopping, Service, Release, Exit }
+    PitPhase pitPhase;
+    Compound playerCompound = Compound.Medium, playerNext = Compound.Hard;
+    float playerWear, pitS, pitLat, pitV, pitTimer, serviceTime;
+    readonly bool[] compoundsUsed = new bool[3];
+    bool pitRequested, tyresSwapped;
+    int playerPitStops;
+    float incidentD, incidentTime = -100f, lastIncidentSeen = -1f;
+    string penaltyNote = "";
     public readonly List<Racer> racers = new List<Racer>();
 
     enum State { Countdown, Racing }
@@ -55,8 +84,17 @@ public class RaceManager : MonoBehaviour
 
     // ---------- Setup ----------
 
+    bool redirecting;
+
     void Awake()
     {
+        // Opened directly (e.g. Play in this scene)? Start the game at the main menu like a real game.
+        if (useSession && !GameSession.StartedFromMenu && Application.CanStreamedLevelBeLoaded(GameSession.MenuScene))
+        {
+            redirecting = true;
+            SceneManager.LoadScene(GameSession.MenuScene);
+            return;
+        }
         if (player is F1Car) Time.fixedDeltaTime = 0.01f;   // stiff suspension and tyres need 100 Hz physics
         Time.timeScale = 1f;
         if (useSession) GameSession.ApplySettings();
@@ -64,6 +102,7 @@ public class RaceManager : MonoBehaviour
 
     void Start()
     {
+        if (redirecting) { enabled = false; return; }
         tex = Texture2D.whiteTexture;
         goDelay = 5f + Random.Range(0.4f, 1.4f);
         if (useSession) SetupFromSession();
@@ -79,6 +118,7 @@ public class RaceManager : MonoBehaviour
         }
         player.inputEnabled = false;
         player.onRespawnRequested = RespawnPlayer;
+        playerAudio = player.GetComponentInChildren<EngineAudio>();
         prevD = track.ClosestDistance(player.transform.position);
         playerRacer.progress = prevD - track.length;
         SetLights(0);
@@ -91,6 +131,84 @@ public class RaceManager : MonoBehaviour
         }
         mapMinX = minX; mapMaxZ = maxZ;
         mapScale = 1f / Mathf.Max(maxX - minX, maxZ - minZ);
+
+        BuildSpeedProfile();
+        if (useSession && GameSession.Settings.brakingLine && lineGreen != null) BuildBrakingMarkers();
+    }
+
+    // ---------- Braking markers (green = full throttle, yellow = get ready, red = brake now) ----------
+
+    [Header("Braking markers")]
+    public Material lineGreen, lineYellow, lineRed;
+    float[] targetSpeed;
+    readonly List<Renderer> markers = new List<Renderer>();
+    const float MarkerSpacing = 4f, MarkerStart = 8f;
+    const int MarkerCount = 40;
+    const float AssumedBraking = 20f;      // conservative braking the markers plan for (m/s², plus downforce below)
+
+    // The fastest safe speed at every track point: corner grip with downforce, then braking backward from each corner
+    void BuildSpeedProfile()
+    {
+        int n = track.Count;
+        targetSpeed = new float[n];
+        for (int i = 0; i < n; i++)
+        {
+            float r = track.RadiusAt(i * track.spacing);
+            float a0 = 15.5f, k = 0.0050f;
+            float denom = 1f - k * r;
+            targetSpeed[i] = denom <= 0.05f ? 95f : Mathf.Min(95f, Mathf.Sqrt(a0 * r / denom));
+        }
+        for (int pass = 0; pass < 2; pass++)
+            for (int i = n - 1; i >= 0; i--)
+            {
+                float next = targetSpeed[(i + 1) % n];
+                float decel = AssumedBraking + 0.0028f * next * next;
+                targetSpeed[i] = Mathf.Min(targetSpeed[i], Mathf.Sqrt(next * next + 2f * decel * track.spacing));
+            }
+    }
+
+    float TargetSpeedAt(float d)
+    {
+        int i = Mathf.FloorToInt(Mathf.Repeat(d, track.length) / track.spacing) % track.Count;
+        return targetSpeed[i];
+    }
+
+    void BuildBrakingMarkers()
+    {
+        var parent = new GameObject("BrakingMarkers").transform;
+        for (int k = 0; k < MarkerCount; k++)
+        {
+            var g = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            Destroy(g.GetComponent<Collider>());
+            g.name = "Marker";
+            g.transform.SetParent(parent, false);
+            g.transform.localScale = new Vector3(0.55f, 0.01f, 1.8f);
+            var r = g.GetComponent<Renderer>();
+            r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            r.sharedMaterial = lineGreen;
+            markers.Add(r);
+        }
+    }
+
+    void UpdateBrakingMarkers()
+    {
+        if (markers.Count == 0) return;
+        bool show = state != State.Countdown && !playerRacer.finished && pitPhase == PitPhase.None;
+        float v = Mathf.Max(player.Speed, 0f);
+        for (int k = 0; k < markers.Count; k++)
+        {
+            var r = markers[k];
+            r.enabled = show;
+            if (!show) continue;
+            float ahead = MarkerStart + k * MarkerSpacing;
+            float d = prevD + ahead;
+            r.transform.SetPositionAndRotation(track.PointAt(d) + Vector3.up * 0.045f, Quaternion.LookRotation(track.TangentAt(d)));
+            // Distance needed to slow from the current speed to the safe speed at this marker
+            float vt = TargetSpeedAt(d);
+            float need = v > vt ? (v * v - vt * vt) / (2f * (AssumedBraking + 0.0028f * v * v)) : 0f;
+            Material m = need >= ahead - 6f ? lineRed : need >= ahead - 50f ? lineYellow : lineGreen;
+            if (r.sharedMaterial != m) r.sharedMaterial = m;
+        }
     }
 
     void SetupFromSession()
@@ -148,6 +266,13 @@ public class RaceManager : MonoBehaviour
             scores[r] = pace * aiSkill + Random.Range(-0.008f, 0.008f);
         }
 
+        // Tyres: the player's starting set, each rival's strategy
+        playerCompound = (Compound)Mathf.Clamp(setup.startCompound, 0, 2);
+        compoundsUsed[(int)playerCompound] = true;
+        playerNext = DefaultNextCompound();
+        Tyres.Paint(player.gameObject, playerCompound);
+        foreach (var r in scores.Keys) AssignStrategy(r.ai);
+
         // Grid order
         var order = new List<Racer>(scores.Keys);
         order.Sort((a, b) => scores[b].CompareTo(scores[a]));
@@ -182,6 +307,38 @@ public class RaceManager : MonoBehaviour
                 order[k].lateral = lat;
             }
         }
+    }
+
+    // One-stop strategy: start on Soft or Medium, switch to a different compound around mid-race.
+    public void AssignStrategy(RaceAI ai)
+    {
+        if (!HasPitLane || laps < 3) { ai.pitLap = -1; return; }
+        bool soft = Random.value < 0.4f;
+        ai.compound = soft ? Compound.Soft : Compound.Medium;
+        ai.nextCompound = soft ? (Random.value < 0.5f ? Compound.Medium : Compound.Hard) : (Random.value < 0.75f ? Compound.Hard : Compound.Soft);
+        float frac = soft ? Random.Range(0.3f, 0.45f) : Random.Range(0.45f, 0.65f);
+        ai.pitLap = Mathf.Clamp(Mathf.RoundToInt(laps * frac), 1, laps - 1);
+        ai.tyreWear = 0f;
+        Tyres.Paint(ai.gameObject, ai.compound);
+    }
+
+    Compound DefaultNextCompound()
+    {
+        switch (playerCompound)
+        {
+            case Compound.Soft: return Compound.Medium;
+            case Compound.Medium: return Compound.Hard;
+            default: return Compound.Medium;
+        }
+    }
+
+    int CompoundsUsedCount() { int n = 0; foreach (bool b in compoundsUsed) if (b) n++; return n; }
+
+    public void OnAiPitStop(RaceAI ai, bool arriving)
+    {
+        if (pitBoxes == null || ai.team < 0 || ai.team >= pitBoxes.Length || pitBoxes[ai.team] == null) return;
+        if (arriving) pitBoxes[ai.team].SetWorking(true);
+        else { pitBoxes[ai.team].SetWorking(false); pitBoxes[ai.team].ShowGreen(); }
     }
 
     (float d, float lat) GridSlot(int k)
@@ -241,6 +398,32 @@ public class RaceManager : MonoBehaviour
         if (pause && !playerRacer.finished) SetPaused(!paused);
         if (paused) return;
 
+        if (HasPitLane)
+        {
+#if ENABLE_INPUT_SYSTEM
+            var kb = Keyboard.current;
+            if (kb != null)
+            {
+                if (kb.bKey.wasPressedThisFrame && pitPhase == PitPhase.None && state == State.Racing) pitRequested = !pitRequested;
+                bool choosing = pitPhase == PitPhase.None || pitPhase == PitPhase.Approach || pitPhase == PitPhase.Stopping;
+                if (choosing && kb.digit1Key.wasPressedThisFrame) playerNext = Compound.Soft;
+                if (choosing && kb.digit2Key.wasPressedThisFrame) playerNext = Compound.Medium;
+                if (choosing && kb.digit3Key.wasPressedThisFrame) playerNext = Compound.Hard;
+            }
+#endif
+            // Incidents: a hard hit brings out yellow flags at the marshal posts before it
+            if (player.LastImpactTime > lastIncidentSeen + 0.5f && player.LastImpactStrength > 8f)
+            {
+                lastIncidentSeen = player.LastImpactTime;
+                incidentD = prevD;
+                incidentTime = Time.time;
+            }
+            bool active = Time.time - incidentTime < 10f;
+            if (marshalPosts != null)
+                foreach (var post in marshalPosts)
+                    if (post != null) post.SetYellow(active && InWindow(post.trackDistance, incidentD - 280f, incidentD + 20f, track.length));
+        }
+
         goBannerTimer -= Time.deltaTime;
         winnerBannerTimer -= Time.deltaTime;
         resultsTimer -= Time.deltaTime;
@@ -262,6 +445,27 @@ public class RaceManager : MonoBehaviour
                 SetLights(0);
                 player.inputEnabled = true;
                 goBannerTimer = 1.5f;
+                if (ambient != null) ambient.Cheer();
+            }
+        }
+
+        // The nearest rival is voiced by a 3D engine sound that follows it
+        if (rivalAudio != null)
+        {
+            Racer nearest = null;
+            float best = 220f * 220f;
+            foreach (var r in racers)
+            {
+                if (r.isPlayer || !r.ai.gameObject.activeSelf) continue;
+                float dd = (r.tr.position - player.transform.position).sqrMagnitude;
+                if (dd < best) { best = dd; nearest = r; }
+            }
+            rivalAudio.gameObject.SetActive(nearest != null);
+            if (nearest != null)
+            {
+                rivalAudio.transform.position = nearest.tr.position;
+                rivalAudio.externalSpeed = nearest.speed;
+                rivalAudio.externalRpm = Mathf.Clamp(6500f + Mathf.Repeat(nearest.speed * 3.6f, 45f) * 120f, 6000f, 12200f);
             }
         }
     }
@@ -301,6 +505,19 @@ public class RaceManager : MonoBehaviour
         playerRacer.lateral = lateral;
         playerRacer.speed = player.Speed;
 
+        if (HasPitLane && player is F1Car f1)
+        {
+            // Tyre wear: distance driven, more when cornering hard
+            if (racing && pitPhase == PitPhase.None && !playerRacer.finished)
+                playerWear += Mathf.Abs(player.Speed) * dt / Tyres.LifeMeters[(int)playerCompound] * (1f + 0.25f * Mathf.Abs(f1.LateralG));
+            f1.tyreGripScale = Tyres.GripFactor(playerCompound, playerWear);
+
+            if (pitPhase == PitPhase.None && racing && !playerRacer.finished && player.Speed > 3f
+                && InWindow(prevD, pitEntryStart, pitEntryEnd, track.length) && (lateral > 6.8f || pitRequested))
+                StartPlayerPit(lateral);
+            UpdatePlayerPit(dt);
+        }
+
         foreach (var r in racers)
         {
             if (r.isPlayer || !r.ai.gameObject.activeSelf) continue;
@@ -309,10 +526,114 @@ public class RaceManager : MonoBehaviour
             r.progress = r.ai.progress;
             r.lateral = r.ai.lane;
             r.speed = r.ai.Speed;
+            if (r.ai.TyresChanged) { r.ai.TyresChanged = false; Tyres.Paint(r.ai.gameObject, r.ai.compound); }
+            if (r.ai.TyresOff != r.tyresHidden) { r.tyresHidden = r.ai.TyresOff; Tyres.SetTyresVisible(r.ai.gameObject, !r.tyresHidden); }
             if (r.finished) continue;
             bool crossedLine = Mathf.FloorToInt(r.progress / track.length) > Mathf.FloorToInt(r.prevProgress / track.length) && r.progress > 0f;
             if (r.progress >= laps * track.length || (winner != null && crossedLine)) Finish(r);
         }
+    }
+
+    // ---------- Player pit stop ----------
+    // From the pit entry line the stop is automated, as in F1 games: limiter on, the car drives to the
+    // team's box, the crew changes the tyres, the release light goes green and the car rejoins at the exit.
+
+    void StartPlayerPit(float lateral)
+    {
+        var rb = player.GetComponent<Rigidbody>();
+        rb.linearVelocity = Vector3.zero;
+        rb.isKinematic = true;
+        player.inputEnabled = false;
+        pitPhase = PitPhase.Approach;
+        pitS = prevD;
+        pitLat = lateral;
+        pitV = Mathf.Max(player.Speed, 5f);
+        pitRequested = false;
+        tyresSwapped = false;
+    }
+
+    void UpdatePlayerPit(float dt)
+    {
+        if (pitPhase == PitPhase.None) return;
+        float L = track.length;
+        var box = pitBoxes != null && playerRacer.team < pitBoxes.Length ? pitBoxes[playerRacer.team] : null;
+        float toBox = Mathf.Repeat(BoxDistance(playerRacer.team) - pitS, L);
+        if (toBox > L / 2f) toBox = 0f;
+        float targetLat = pitLaneOffset, latRate = 3.5f;
+
+        switch (pitPhase)
+        {
+            case PitPhase.Approach:
+                pitV = Mathf.MoveTowards(pitV, pitSpeed, (pitV > pitSpeed ? 18f : 6f) * dt);
+                if (pitV * pitV / 16f >= toBox - 0.2f) pitPhase = PitPhase.Stopping;
+                break;
+            case PitPhase.Stopping:
+                pitV = Mathf.Min(pitV, Mathf.Sqrt(16f * Mathf.Max(0f, toBox)));
+                if (toBox < 0.15f || pitV < 0.2f)
+                {
+                    pitV = 0f;
+                    pitPhase = PitPhase.Service;
+                    pitTimer = 0f;
+                    serviceTime = 2.3f + Random.value * 0.6f + (Random.value < 0.06f ? 1.8f : 0f);
+                    if (box != null) box.SetWorking(true);
+                    if (playerAudio != null) playerAudio.PlayPitGun();
+                }
+                break;
+            case PitPhase.Service:
+                pitTimer += dt;
+                bool off = pitTimer > 0.35f && pitTimer < serviceTime - 0.5f;
+                if (off != playerRacer.tyresHidden) { playerRacer.tyresHidden = off; Tyres.SetTyresVisible(player.gameObject, !off); }
+                if (pitTimer > 0.8f && !tyresSwapped)
+                {
+                    tyresSwapped = true;
+                    playerCompound = playerNext;
+                    playerWear = 0f;
+                    compoundsUsed[(int)playerCompound] = true;
+                    Tyres.Paint(player.gameObject, playerCompound);
+                }
+                if (pitTimer >= serviceTime)
+                {
+                    if (box != null) { box.SetWorking(false); box.ShowGreen(); }
+                    playerPitStops++;
+                    playerNext = DefaultNextCompound();
+                    pitPhase = PitPhase.Release;
+                }
+                break;
+            case PitPhase.Release:
+                pitV = Mathf.MoveTowards(pitV, pitSpeed, 9f * dt);
+                if (InWindow(pitS, pitExitStart, pitExitEnd + 60f, L)) pitPhase = PitPhase.Exit;
+                break;
+            case PitPhase.Exit:
+            {
+                targetLat = 2.4f;
+                latRate = 3f;
+                bool limited = InWindow(pitS, pitExitStart, pitExitEnd, L);
+                pitV = Mathf.MoveTowards(pitV, limited ? pitSpeed : 34f, 9f * dt);
+                if (!limited && Mathf.Abs(pitLat - targetLat) < 0.2f)
+                {
+                    // Hand the car back to the driver
+                    var rb = player.GetComponent<Rigidbody>();
+                    rb.isKinematic = false;
+                    rb.linearVelocity = track.TangentAt(pitS) * pitV;
+                    player.inputEnabled = !playerRacer.finished;
+                    pitPhase = PitPhase.None;
+                    return;
+                }
+                break;
+            }
+        }
+
+        float before = pitLat;
+        if (pitPhase != PitPhase.Service) pitLat = Mathf.MoveTowards(pitLat, targetLat, latRate * dt);
+        float latVel = (pitLat - before) / dt;
+        pitS += pitV * dt;
+        bool jacked = pitPhase == PitPhase.Service && pitTimer > 0.2f && pitTimer < serviceTime - 0.3f;
+        Vector3 pos = track.PointAt(pitS) + track.RightAt(pitS) * pitLat + Vector3.up * (0.04f + (jacked ? 0.06f : 0f));
+        Vector3 heading = track.TangentAt(pitS) * Mathf.Max(pitV, 1f) + track.RightAt(pitS) * latVel;
+        var body = player.GetComponent<Rigidbody>();
+        body.MovePosition(pos);
+        body.MoveRotation(Quaternion.LookRotation(heading.normalized, Vector3.up));
+        if (player is F1Car f1) f1.SetPitSpeed(pitV);
     }
 
     void OnPlayerCrossedLine()
@@ -330,16 +651,22 @@ public class RaceManager : MonoBehaviour
         r.finished = true;
         r.finishTime = raceTime;
         finishOrder.Add(r);
-        if (winner == null) { winner = r; winnerBannerTimer = 5f; }
+        if (winner == null) { winner = r; winnerBannerTimer = 5f; if (ambient != null) ambient.Cheer(); }
         if (r.isPlayer)
         {
             resultsTimer = 12f;
-            player.inputEnabled = false;
+            if (pitPhase == PitPhase.None) player.inputEnabled = false;
+            // Dry-race rule: two different compounds must be used
+            if (MandatoryStop && CompoundsUsedCount() < 2)
+            {
+                r.penalty = 30f;
+                penaltyNote = "+30 s penalty: you did not use a second tyre compound";
+            }
         }
         else
         {
             r.ai.parkProgress = pitEntryDistance > 0f
-                ? Mathf.Ceil(r.progress / track.length) * track.length + pitEntryDistance
+                ? Mathf.Floor(r.progress / track.length) * track.length + pitEntryDistance
                 : laps * track.length + 95f - 11f * (finishOrder.FindAll(f => !f.isPlayer).Count - 1);
             if (pitEntryDistance > 0f) { r.ai.parkLane = pitLaneOffset; r.ai.leaveAfterFinish = true; }
         }
@@ -368,6 +695,7 @@ public class RaceManager : MonoBehaviour
     List<Racer> Standings()
     {
         var list = new List<Racer>(finishOrder);
+        list.Sort((a, b) => (a.finishTime + a.penalty).CompareTo(b.finishTime + b.penalty));
         var running = racers.FindAll(r => !r.finished);
         running.Sort((a, b) => b.progress.CompareTo(a.progress));
         list.AddRange(running);
@@ -411,11 +739,12 @@ public class RaceManager : MonoBehaviour
 
     string GapText(Racer r, Racer leader)
     {
-        if (r == leader) return r.finished ? FormatTime(r.finishTime) : "LEADER";
+        if (r == leader) return r.finished ? FormatTime(r.finishTime + r.penalty) : "LEADER";
         if (r.finished && leader.finished)
         {
             int lapsDown = Mathf.RoundToInt((leader.progress - r.progress) / track.length);
-            return lapsDown >= 1 ? "+" + lapsDown + (lapsDown == 1 ? " LAP" : " LAPS") : "+" + (r.finishTime - leader.finishTime).ToString("0.000");
+            return lapsDown >= 1 ? "+" + lapsDown + (lapsDown == 1 ? " LAP" : " LAPS")
+                                 : "+" + (r.finishTime + r.penalty - leader.finishTime - leader.penalty).ToString("0.000");
         }
         float diff = leader.progress - r.progress;
         if (diff >= track.length) { int n = Mathf.FloorToInt(diff / track.length); return "+" + n + (n == 1 ? " LAP" : " LAPS"); }
@@ -469,6 +798,8 @@ public class RaceManager : MonoBehaviour
             Fill(new Rect(Screen.width / 2f - 200 * s, 128 * s, 400 * s, 34 * s), new Color(0, 0, 0, 0.7f), 8 * s);
             GUI.Label(new Rect(Screen.width / 2f - 200 * s, 128 * s, 400 * s, 34 * s), "CHEQUERED FLAG - finish this lap", st);
         }
+
+        if (HasPitLane && player is F1Car) DrawTyresAndPit(s);
 
         if (playerRacer.finished && resultsTimer > 0) DrawResults(s, standings);
         else if (playerRacer.finished) DrawFinishedStrip(s, standings);
@@ -539,6 +870,22 @@ public class RaceManager : MonoBehaviour
             GUI.Label(new Rect(p.x + 4 * s, y, 26 * s, rowH), (i + 1).ToString(), posSt);
             Fill(new Rect(p.x + 32 * s, y + 4 * s, 4 * s, rowH - 8 * s), r.color);
             GUI.Label(new Rect(p.x + 42 * s, y, 60 * s, rowH), r.code, codeSt);
+            if (HasPitLane)
+            {
+                Compound c = r.isPlayer ? playerCompound : r.ai.compound;
+                bool inPit = r.isPlayer ? pitPhase != PitPhase.None : r.ai.Pit != RaceAI.PitState.None;
+                Fill(new Rect(p.x + 82 * s, y + 4 * s, rowH - 8 * s, rowH - 8 * s), Tyres.Colors[(int)c], rowH);
+                var tl = new GUIStyle(posSt) { fontSize = Mathf.RoundToInt(9 * s) };
+                tl.normal.textColor = Color.black;
+                GUI.Label(new Rect(p.x + 82 * s, y + 4 * s, rowH - 8 * s, rowH - 8 * s), Tyres.Letters[(int)c], tl);
+                if (inPit)
+                {
+                    Fill(new Rect(p.x + 102 * s, y + 3 * s, 30 * s, rowH - 6 * s), new Color(0.9f, 0.9f, 0.9f), 3 * s);
+                    var pt = new GUIStyle(posSt) { fontSize = Mathf.RoundToInt(10 * s) };
+                    pt.normal.textColor = Color.black;
+                    GUI.Label(new Rect(p.x + 102 * s, y + 3 * s, 30 * s, rowH - 6 * s), "PIT", pt);
+                }
+            }
             GUI.Label(new Rect(p.x + 90 * s, y, w - 100 * s, rowH), r.finished && r != leader && !leader.finished ? "FIN" : GapText(r, leader), gapSt);
         }
     }
@@ -638,6 +985,77 @@ public class RaceManager : MonoBehaviour
             Fill(new Rect(bar.x + bar.width * k / 3f - 1 * s, bar.y - 2 * s, 2 * s, bar.height + 4 * s), new Color(1f, 1f, 1f, 0.5f));
     }
 
+    // Tyre panel (compound, wear, stop requirement) and pit lane / flag messages
+    void DrawTyresAndPit(float s)
+    {
+        Rect p = new Rect(330 * s, Screen.height - 132 * s, 250 * s, 108 * s);
+        Fill(p, new Color(0.05f, 0.06f, 0.09f, 0.78f), 12 * s);
+        float d = 52 * s;
+        Rect circle = new Rect(p.x + 14 * s, p.y + 14 * s, d, d);
+        Fill(circle, Tyres.Colors[(int)playerCompound], d);
+        Fill(new Rect(circle.x + 6 * s, circle.y + 6 * s, d - 12 * s, d - 12 * s), new Color(0.08f, 0.08f, 0.09f), d);
+        var letter = new GUIStyle(big) { fontSize = Mathf.RoundToInt(24 * s) };
+        letter.normal.textColor = Tyres.Colors[(int)playerCompound];
+        GUI.Label(circle, Tyres.Letters[(int)playerCompound], letter);
+
+        var lbl = new GUIStyle(small) { alignment = TextAnchor.MiddleLeft };
+        GUI.Label(new Rect(p.x + 80 * s, p.y + 10 * s, 160 * s, 20 * s), Tyres.Names[(int)playerCompound].ToUpperInvariant() + " TYRES", lbl);
+        float life = Mathf.Clamp01(1f - playerWear);
+        Rect bar = new Rect(p.x + 80 * s, p.y + 36 * s, 150 * s, 12 * s);
+        Fill(bar, new Color(1, 1, 1, 0.12f), 6 * s);
+        Fill(new Rect(bar.x, bar.y, bar.width * life, bar.height), Color.Lerp(new Color(1f, 0.25f, 0.2f), new Color(0.3f, 0.9f, 0.4f), life), 6 * s);
+        GUI.Label(new Rect(p.x + 80 * s, p.y + 50 * s, 160 * s, 20 * s), Mathf.RoundToInt(life * 100f) + "% life  ·  stops " + playerPitStops, lbl);
+
+        string status = "";
+        Color sc = Color.white;
+        if (pitPhase == PitPhase.None)
+        {
+            if (pitRequested) { status = "PIT REQUESTED - box this lap (B cancels)"; sc = new Color(0.4f, 0.8f, 1f); }
+            else if (MandatoryStop && CompoundsUsedCount() < 2 && !playerRacer.finished) { status = "STOP REQUIRED · B = box this lap"; sc = new Color(1f, 0.8f, 0.2f); }
+            else if (playerWear > 0.7f) { status = "TYRES GONE - BOX, BOX (B)"; sc = new Color(1f, 0.35f, 0.25f); }
+        }
+        if (status.Length > 0)
+        {
+            var st = new GUIStyle(lbl) { fontStyle = FontStyle.Bold, fontSize = Mathf.RoundToInt(13 * s) };
+            st.normal.textColor = sc;
+            GUI.Label(new Rect(p.x + 14 * s, p.y + 76 * s, p.width - 20 * s, 24 * s), status, st);
+        }
+
+        if (pitPhase != PitPhase.None)
+        {
+            Rect b = new Rect(Screen.width / 2f - 300 * s, Screen.height - 190 * s, 600 * s, 110 * s);
+            Fill(b, new Color(0.03f, 0.04f, 0.07f, 0.88f), 14 * s);
+            var title = new GUIStyle(mid) { alignment = TextAnchor.MiddleCenter };
+            string head = pitPhase == PitPhase.Service ? "PIT STOP  " + pitTimer.ToString("0.0") + " s"
+                        : pitPhase == PitPhase.Exit || pitPhase == PitPhase.Release ? "RELEASED - PIT EXIT" : "PIT LANE  ·  LIMITER 80 km/h";
+            title.normal.textColor = pitPhase == PitPhase.Service ? new Color(1f, 0.35f, 0.3f) : new Color(0.4f, 1f, 0.5f);
+            GUI.Label(new Rect(b.x, b.y + 8 * s, b.width, 30 * s), head, title);
+            bool choosing = pitPhase == PitPhase.Approach || pitPhase == PitPhase.Stopping;
+            GUI.Label(new Rect(b.x, b.y + 38 * s, b.width, 22 * s), choosing ? "Choose new tyres:" : "Fitted:", small);
+            for (int k = 0; k < 3; k++)
+            {
+                Compound c = (Compound)k;
+                Compound shown = pitPhase == PitPhase.Service || pitPhase == PitPhase.Release || pitPhase == PitPhase.Exit ? (tyresSwapped || pitPhase != PitPhase.Service ? playerCompound : playerNext) : playerNext;
+                bool sel = c == shown;
+                Rect r = new Rect(b.x + 60 * s + k * 165 * s, b.y + 62 * s, 150 * s, 36 * s);
+                Fill(r, sel ? Tyres.Colors[k] : new Color(1, 1, 1, 0.08f), 8 * s);
+                var t = new GUIStyle(mid) { alignment = TextAnchor.MiddleCenter, fontSize = Mathf.RoundToInt(15 * s) };
+                t.normal.textColor = sel ? Color.black : Color.white;
+                GUI.Label(r, (k + 1) + "  " + Tyres.Names[k].ToUpperInvariant(), t);
+            }
+        }
+
+        // Yellow flag in the section ahead of the player
+        if (Time.time - incidentTime < 10f && InWindow(prevD, incidentD - 300f, incidentD + 20f, track.length))
+        {
+            Rect y = new Rect(Screen.width / 2f - 160 * s, 176 * s, 320 * s, 34 * s);
+            Fill(y, new Color(1f, 0.85f, 0.1f, 0.95f), 6 * s);
+            var st = new GUIStyle(mid) { alignment = TextAnchor.MiddleCenter };
+            st.normal.textColor = Color.black;
+            GUI.Label(y, "YELLOW FLAG - incident ahead", st);
+        }
+    }
+
     void DrawFinishedStrip(float s, List<Racer> standings)
     {
         Rect p = new Rect(Screen.width / 2f - 330 * s, 128 * s, 660 * s, 40 * s);
@@ -658,11 +1076,14 @@ public class RaceManager : MonoBehaviour
         Rect p = new Rect(Screen.width / 2f - 330 * s, Screen.height / 2f - (150 * s + rowH * rows) / 2f, 660 * s, 160 * s + rowH * rows);
         Fill(p, new Color(0.03f, 0.04f, 0.07f, 0.94f), 18 * s);
 
-        bool youWon = winner == playerRacer;
+        var first = standings[0];   // after penalties
+        bool youWon = first == playerRacer;
         var title = new GUIStyle(big);
         title.normal.textColor = youWon ? new Color(1f, 0.85f, 0.2f) : Color.white;
-        GUI.Label(new Rect(p.x, p.y + 10 * s, p.width, 44 * s), youWon ? "YOU WIN!" : "WINNER: " + winner.name.ToUpperInvariant(), title);
-        GUI.Label(new Rect(p.x, p.y + 52 * s, p.width, 22 * s), track.trackName.ToUpperInvariant() + "  ·  " + laps + " LAPS  ·  BEST LAP " + FormatTime(bestLap), small);
+        GUI.Label(new Rect(p.x, p.y + 10 * s, p.width, 44 * s), youWon ? "YOU WIN!" : "WINNER: " + first.name.ToUpperInvariant(), title);
+        string sub = track.trackName.ToUpperInvariant() + "  ·  " + laps + " LAPS  ·  BEST LAP " + FormatTime(bestLap);
+        if (penaltyNote.Length > 0) sub += "  ·  " + penaltyNote;
+        GUI.Label(new Rect(p.x, p.y + 52 * s, p.width, 22 * s), sub, small);
 
         var nameSt = new GUIStyle(mid) { fontSize = Mathf.RoundToInt(15 * s) };
         var right = new GUIStyle(nameSt) { alignment = TextAnchor.MiddleRight, fontStyle = FontStyle.Normal };

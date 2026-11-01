@@ -2,7 +2,8 @@ using UnityEngine;
 
 // AI racer: follows the track centreline (including its height) on a chosen lane, brakes for the
 // corners ahead using a grip model (optionally with aerodynamic downforce), overtakes slower cars by
-// changing lane, reacts to being hit, and after the flag cools down and leaves the track.
+// changing lane, reacts to being hit, wears its tyres, makes a pit stop for fresh tyres on its planned
+// lap (pit lane speed limit, stop at the team's box, release, rejoin), and after the flag leaves the track.
 [RequireComponent(typeof(Rigidbody))]
 public class RaceAI : MonoBehaviour
 {
@@ -21,6 +22,18 @@ public class RaceAI : MonoBehaviour
     public float parkLane = -10f;      // after finishing, pull off to this side offset
     public bool leaveAfterFinish;      // disappear (into the pit lane) once parked
 
+    [Header("Tyres & strategy")]
+    public Compound compound = Compound.Medium;
+    public Compound nextCompound = Compound.Hard;
+    public float tyreWear;
+    public int pitLap = -1;            // pit at the end of this lap (-1 = no stop planned)
+
+    public enum PitState { None, Entering, InLane, Stopped, Leaving }
+    public PitState Pit { get; private set; }
+    public int PitStops { get; private set; }
+    public bool TyresOff { get; private set; }
+    public bool TyresChanged { get; set; }   // set when new tyres go on; the race manager repaints them
+
     [System.NonSerialized] public float parkProgress = float.NaN;   // where to stop after the race
     [System.NonSerialized] public RaceManager manager;
     public float Speed { get; private set; }
@@ -33,6 +46,7 @@ public class RaceAI : MonoBehaviour
     Transform[] wheels = new Transform[4];
     float laneTarget, wheelSpin;
     float lateralVel, wobble, wobbleVel, recoverTimer;   // crash reaction
+    float stopTime, stopElapsed;
 
     void Awake()
     {
@@ -49,6 +63,7 @@ public class RaceAI : MonoBehaviour
         lane = laneTarget = startLane;
         Speed = 0f;
         Parked = false;
+        Pit = PitState.None;
         if (manager != null) Place();
     }
 
@@ -62,14 +77,30 @@ public class RaceAI : MonoBehaviour
         recoverTimer = Mathf.Clamp(dv.magnitude * 0.25f, 0.5f, 2.5f);
     }
 
+    float GripFactor => manager != null && manager.HasPitLane ? Tyres.GripFactor(compound, tyreWear) : 1f;
+
     float CornerSpeed(float radius, float skill)
     {
-        float a0 = cornerGrip * skill;
+        float g = skill * GripFactor;
+        float a0 = cornerGrip * g;
         if (aeroGrip <= 0f) return Mathf.Sqrt(a0 * radius);
         // lateral grip a(v) = a0 + k·v²  →  v² = a0·R / (1 − k·R)
-        float k = aeroGrip * skill;
+        float k = aeroGrip * g;
         float denom = 1f - k * radius;
         return denom <= 0.05f ? 999f : Mathf.Sqrt(a0 * radius / denom);
+    }
+
+    float RacingSpeed(float skill, RaceTrack track)
+    {
+        float desired = maxSpeed * skill;
+        float horizon = aeroGrip > 0f ? 220f : 80f;
+        for (float ahead = 0f; ahead <= horizon; ahead += 8f)
+        {
+            float vCorner = CornerSpeed(track.RadiusAt(progress + ahead), skill);
+            float decel = braking + aeroBraking * vCorner * vCorner * 0.5f;
+            desired = Mathf.Min(desired, Mathf.Sqrt(vCorner * vCorner + 2f * decel * ahead));
+        }
+        return desired;
     }
 
     public void Step(float dt, bool racing, bool finished, float skill)
@@ -79,34 +110,109 @@ public class RaceAI : MonoBehaviour
         float desired = 0f;
         float laneSpeed = 2.5f;
         float laneLimit = track.halfWidth - 1.4f;
-        if (finished)
+        float d = Mathf.Repeat(progress, track.length);
+        TyresOff = false;
+
+        if (finished && Pit == PitState.None)
         {
-            // Cool down, pull off to the side and stop (or head into the pit lane)
             float remaining = float.IsNaN(parkProgress) ? 0f : parkProgress - progress;
-            desired = Mathf.Min(22f, Mathf.Sqrt(2f * 7f * Mathf.Max(0f, remaining)));
-            if (remaining < 0.3f) desired = 0f;
-            if (!leaveAfterFinish || remaining < 30f) laneTarget = parkLane;
-            laneSpeed = leaveAfterFinish ? 5f : 3.5f;
             laneLimit = Mathf.Abs(parkLane) + 0.5f;
-            if (leaveAfterFinish && Mathf.Abs(lane - parkLane) < 0.6f) desired = Mathf.Max(desired, 4f);
-            if (!Parked && ((leaveAfterFinish && Mathf.Abs(lane - parkLane) < 0.5f && remaining < 1f) || (!leaveAfterFinish && remaining < 0.3f && Speed < 0.1f)))
+            if (leaveAfterFinish)
             {
-                Parked = true;
-                if (leaveAfterFinish) gameObject.SetActive(false);
+                // Cool-down, then turn into the pit lane and leave the track
+                desired = remaining > 45f ? 22f : 12f;
+                if (remaining < 45f) { laneTarget = parkLane; laneSpeed = 6f; }
+                if (!Parked && Mathf.Abs(lane - parkLane) < 0.5f) { Parked = true; gameObject.SetActive(false); }
+            }
+            else
+            {
+                desired = Mathf.Min(22f, Mathf.Sqrt(2f * 7f * Mathf.Max(0f, remaining)));
+                if (remaining < 0.3f) desired = 0f;
+                laneTarget = parkLane;
+                laneSpeed = 3.5f;
+                if (!Parked && remaining < 0.3f && Speed < 0.1f) Parked = true;
             }
         }
-        else if (racing)
+        else if (racing || Pit != PitState.None)
         {
-            desired = maxSpeed * skill;
-            // Brake early enough for every corner within braking distance
-            float horizon = aeroGrip > 0f ? 220f : 80f;
-            for (float ahead = 0f; ahead <= horizon; ahead += 8f)
+            var m = manager;
+            int lap = Mathf.FloorToInt(progress / track.length) + 1;
+            switch (Pit)
             {
-                float vCorner = CornerSpeed(track.RadiusAt(progress + ahead), skill);
-                float decel = braking + aeroBraking * vCorner * vCorner * 0.5f;
-                desired = Mathf.Min(desired, Mathf.Sqrt(vCorner * vCorner + 2f * decel * ahead));
+                case PitState.None:
+                    desired = RacingSpeed(skill, track);
+                    desired = Mathf.Min(desired, AvoidTraffic(narrow ? NarrowLanes : WideLanes));
+                    if (m.HasPitLane && pitLap > 0 && lap == pitLap && !finished
+                        && RaceManager.InWindow(d, m.pitEntryStart - 260f, m.pitEntryStart - 20f, track.length))
+                        Pit = PitState.Entering;
+                    break;
+
+                case PitState.Entering:
+                {
+                    // Brake to the pit speed limit at the entry line, then move across into the pit lane
+                    float toEntry = Mathf.Repeat(m.pitEntryStart - d, track.length);
+                    if (toEntry > track.length / 2f) toEntry = 0f;
+                    desired = Mathf.Min(RacingSpeed(skill, track), Mathf.Sqrt(m.pitSpeed * m.pitSpeed + 2f * 14f * toEntry));
+                    desired = Mathf.Min(desired, FollowLimit(false));
+                    if (RaceManager.InWindow(d, m.pitEntryStart, m.pitEntryEnd + 20f, track.length))
+                    {
+                        laneTarget = m.pitLaneOffset;
+                        laneSpeed = 6f;
+                        desired = Mathf.Min(desired, m.pitSpeed);
+                    }
+                    laneLimit = m.pitLaneOffset + 0.5f;
+                    if (lane > m.pitLaneOffset - 2f) Pit = PitState.InLane;
+                    break;
+                }
+
+                case PitState.InLane:
+                {
+                    laneTarget = m.pitLaneOffset;
+                    laneSpeed = 6f;
+                    laneLimit = m.pitLaneOffset + 0.5f;
+                    float toBox = Mathf.Repeat(m.BoxDistance(team) - d, track.length);
+                    if (toBox > track.length / 2f) toBox = 0f;
+                    desired = Mathf.Min(m.pitSpeed, Mathf.Sqrt(2f * 10f * Mathf.Max(0f, toBox - 0.2f)));
+                    desired = Mathf.Min(desired, FollowLimit(true));
+                    if (toBox < 0.6f && Speed < 1.5f)
+                    {
+                        Pit = PitState.Stopped;
+                        Speed = 0f;
+                        stopElapsed = 0f;
+                        stopTime = 2.2f + Random.value * 0.7f + (Random.value < 0.08f ? 2f : 0f);
+                        m.OnAiPitStop(this, true);
+                    }
+                    break;
+                }
+
+                case PitState.Stopped:
+                    desired = 0f;
+                    laneLimit = m.pitLaneOffset + 0.5f;
+                    stopElapsed += dt;
+                    TyresOff = stopElapsed > 0.35f && stopElapsed < stopTime - 0.5f;
+                    if (stopElapsed > 0.8f && compound != nextCompound) { compound = nextCompound; tyreWear = 0f; TyresChanged = true; }
+                    if (stopElapsed >= stopTime)
+                    {
+                        Pit = PitState.Leaving;
+                        PitStops++;
+                        m.OnAiPitStop(this, false);
+                    }
+                    break;
+
+                case PitState.Leaving:
+                {
+                    laneLimit = m.pitLaneOffset + 0.5f;
+                    desired = Mathf.Min(m.pitSpeed, FollowLimit(true));
+                    if (RaceManager.InWindow(d, m.pitExitStart, m.pitExitEnd + 40f, track.length))
+                    {
+                        laneTarget = narrow ? 2.6f : 4.5f;
+                        laneSpeed = 5f;
+                        if (!RaceManager.InWindow(d, m.pitExitStart, m.pitExitEnd, track.length)) desired = RacingSpeed(skill, track);
+                    }
+                    if (lane < (narrow ? 3.2f : 5f) && !RaceManager.InWindow(d, m.pitEntryStart, m.pitExitStart, track.length)) Pit = PitState.None;
+                    break;
+                }
             }
-            desired = Mathf.Min(desired, AvoidTraffic(narrow ? NarrowLanes : WideLanes));
         }
 
         // After being hit: knocked sideways and twisted, then the driver gathers it up and rejoins
@@ -125,6 +231,7 @@ public class RaceAI : MonoBehaviour
         Speed = Mathf.MoveTowards(Speed, desired, (desired < Speed ? brake : accel) * dt);
         if (Speed > 0.5f && Mathf.Abs(lateralVel) < 0.5f) lane = Mathf.MoveTowards(lane, laneTarget, laneSpeed * dt);
         progress += Speed * dt;
+        if (manager.HasPitLane && Pit == PitState.None && !finished) tyreWear += Speed * dt / Tyres.LifeMeters[(int)compound];
         Place();
     }
 
@@ -139,6 +246,23 @@ public class RaceAI : MonoBehaviour
         else transform.SetPositionAndRotation(pos, rot);
     }
 
+    // Keep about 7 m behind the car ahead in the same lane (or, in the pit lane, any car in the pit lane)
+    float FollowLimit(bool pitLane)
+    {
+        RaceManager.Racer ahead = null;
+        float gapBest = float.MaxValue;
+        foreach (var r in manager.racers)
+        {
+            if (r.ai == this || r.retired) continue;
+            if (r.ai != null && !r.ai.gameObject.activeSelf) continue;
+            float dp = r.progress - progress;
+            bool sameLane = pitLane ? r.lateral > manager.pitLaneOffset - 2.5f : Mathf.Abs(r.lateral - lane) < 2.3f;
+            if (dp > 0f && dp < 18f && sameLane && dp < gapBest) { gapBest = dp; ahead = r; }
+        }
+        if (ahead == null) return float.MaxValue;
+        return Mathf.Max(0f, ahead.speed + (gapBest - 7f) * 1.2f);
+    }
+
     float AvoidTraffic(float[] lanes)
     {
         float limit = float.MaxValue;
@@ -146,6 +270,7 @@ public class RaceAI : MonoBehaviour
         foreach (var r in manager.racers)
         {
             if (r.ai == this || r.retired) continue;
+            if (r.ai != null && (!r.ai.gameObject.activeSelf || r.ai.Pit != PitState.None)) continue;
             float dp = r.progress - progress;
             if (dp > 0f && dp < 16f && Mathf.Abs(r.lateral - lane) < 2.3f && (blocker == null || dp < blocker.progress - progress))
                 blocker = r;
@@ -168,9 +293,9 @@ public class RaceAI : MonoBehaviour
         }
         if (!float.IsNaN(bestLane)) laneTarget = bestLane;
 
-        // Don't drive into the car ahead while waiting for a gap
+        // Until we are clear sideways, keep a following gap of about 7 m to the car ahead
         float gap = blocker.progress - progress;
-        if (gap < 10f && float.IsNaN(bestLane)) limit = Mathf.Max(0f, blocker.speed - (10f - gap) * 0.8f);
+        limit = Mathf.Max(0f, blocker.speed + (gap - 7f) * 1.2f);
         return limit;
     }
 

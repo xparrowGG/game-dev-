@@ -16,6 +16,9 @@ public class GameSettings
     public bool useMph;
     public int defaultCamera;             // 0 TV pod, 1 chase, 2 cockpit
     public bool abs = true, tractionControl = true, steeringAssist = true, autoGearbox = true;
+    public bool brakingLine = true;       // green / yellow / red braking markers on the track
+    public bool teamRadio = true;         // race engineer messages
+    public bool nameTags = true;          // driver names above the cars
     public int difficulty = 1;            // index into GameSession.DifficultyNames
     public int careerLaps = 10;
 }
@@ -27,6 +30,7 @@ public class RaceSetup
     public int opponents = 19;
     public int difficulty = 1;
     public int grid;                      // 0 pole, 1 random, 2 back of the grid, 3 qualifying (by car pace)
+    public int startCompound = 1;         // 0 soft, 1 medium, 2 hard
     public int team;
     public string driverName = "Player";
     public string driverCode = "YOU";
@@ -69,28 +73,31 @@ public class TeamInfo
 
 public static class GameSession
 {
+    public const string GameTitle = "XPARROW F1 GP";
     public const string MenuScene = "Main Menu";
     public const string RaceScene = "Monaco GP";
     public const string TrackName = "Monte Carlo Street Circuit";
     public static readonly int[] Points = { 25, 18, 15, 12, 10, 8, 6, 4, 2, 1 };
-    public static readonly string[] DifficultyNames = { "Rookie", "Amateur", "Professional", "Legend" };
-    public static readonly float[] DifficultySkill = { 0.86f, 0.93f, 1.0f, 1.05f };
+    public static readonly string[] DifficultyNames = { "Easy", "Medium", "Hard" };
+    public static readonly float[] DifficultySkill = { 0.88f, 0.96f, 1.03f };
     public static readonly string[] GridNames = { "Pole position", "Random", "Back of the grid", "Qualifying (car pace)" };
     public const int MaxUpgrade = 5;
+    public static bool StartedFromMenu;   // the race scene sends you to the menu if opened directly
 
-    // Fictional teams and drivers
+    // The 2026 grid (ten teams, two race drivers each). Colours are team-colour schemes only:
+    // no sponsor logos or official livery artwork. Edit here when line-ups change.
     public static readonly TeamInfo[] Teams =
     {
-        new TeamInfo { name = "Aurora Racing",     primary = Hex("0B2A6F"), secondary = Hex("E8B220"), performance = 1.040f, drivers = new[] { "Lucas Moreau", "Kenji Arai" },     codes = new[] { "MOR", "ARA" } },
-        new TeamInfo { name = "Vulcan Motorsport", primary = Hex("C8102E"), secondary = Hex("F2F2F2"), performance = 1.032f, drivers = new[] { "Mateo Rinaldi", "Erik Lindqvist" }, codes = new[] { "RIN", "LIN" } },
-        new TeamInfo { name = "Polaris GP",        primary = Hex("9AA4AE"), secondary = Hex("00A19B"), performance = 1.024f, drivers = new[] { "Daniel Okafor", "Thomas Becker" },  codes = new[] { "OKA", "BEC" } },
-        new TeamInfo { name = "Ember Racing",      primary = Hex("FF7A00"), secondary = Hex("1A1A1A"), performance = 1.012f, drivers = new[] { "Sora Nakamura", "Liam Carter" },    codes = new[] { "NAK", "CAR" } },
-        new TeamInfo { name = "Verdant Racing",    primary = Hex("0E7A3E"), secondary = Hex("F2F2F2"), performance = 1.000f, drivers = new[] { "Rafael Costa", "Jonas Weber" },     codes = new[] { "COS", "WEB" } },
-        new TeamInfo { name = "Azure Motorsport",  primary = Hex("4FA3E0"), secondary = Hex("E85A9B"), performance = 0.990f, drivers = new[] { "Pierre Laurent", "Marco Bianchi" }, codes = new[] { "LAU", "BIA" } },
-        new TeamInfo { name = "Titan Racing",      primary = Hex("3A3D42"), secondary = Hex("F5D000"), performance = 0.980f, drivers = new[] { "Oliver Hayes", "Ivan Petrov" },     codes = new[] { "HAY", "PET" } },
-        new TeamInfo { name = "Nova Speed",        primary = Hex("F4F4F4"), secondary = Hex("1F4FBF"), performance = 0.970f, drivers = new[] { "Yuki Tanaka", "Alex Romero" },      codes = new[] { "TAN", "ROM" } },
-        new TeamInfo { name = "Cobalt GP",         primary = Hex("14213D"), secondary = Hex("D62828"), performance = 0.960f, drivers = new[] { "Noah Fischer", "Hugo Martins" },    codes = new[] { "FIS", "MAR" } },
-        new TeamInfo { name = "Falcon Racing",     primary = Hex("5B2C83"), secondary = Hex("F2F2F2"), performance = 0.950f, drivers = new[] { "Leo Novak", "Sam Okoye" },          codes = new[] { "NOV", "OKO" } },
+        new TeamInfo { name = "McLaren",         primary = Hex("FF8000"), secondary = Hex("1B1B1F"), performance = 1.040f, drivers = new[] { "Lando Norris", "Oscar Piastri" },        codes = new[] { "NOR", "PIA" } },
+        new TeamInfo { name = "Red Bull Racing", primary = Hex("1E2A4A"), secondary = Hex("DC1E28"), performance = 1.034f, drivers = new[] { "Max Verstappen", "Isack Hadjar" },      codes = new[] { "VER", "HAD" } },
+        new TeamInfo { name = "Mercedes",        primary = Hex("A9B1B8"), secondary = Hex("00A19C"), performance = 1.030f, drivers = new[] { "George Russell", "Kimi Antonelli" },    codes = new[] { "RUS", "ANT" } },
+        new TeamInfo { name = "Ferrari",         primary = Hex("DC0000"), secondary = Hex("FFF200"), performance = 1.028f, drivers = new[] { "Charles Leclerc", "Lewis Hamilton" },    codes = new[] { "LEC", "HAM" } },
+        new TeamInfo { name = "Williams",        primary = Hex("0B3C8C"), secondary = Hex("00A0E9"), performance = 0.995f, drivers = new[] { "Alexander Albon", "Carlos Sainz" },     codes = new[] { "ALB", "SAI" } },
+        new TeamInfo { name = "Aston Martin",    primary = Hex("00594F"), secondary = Hex("CEDC00"), performance = 0.990f, drivers = new[] { "Fernando Alonso", "Lance Stroll" },     codes = new[] { "ALO", "STR" } },
+        new TeamInfo { name = "Racing Bulls",    primary = Hex("F2F4F7"), secondary = Hex("1634CB"), performance = 0.985f, drivers = new[] { "Liam Lawson", "Arvid Lindblad" },      codes = new[] { "LAW", "LIN" } },
+        new TeamInfo { name = "Haas",            primary = Hex("EDEDED"), secondary = Hex("DA291C"), performance = 0.978f, drivers = new[] { "Esteban Ocon", "Oliver Bearman" },      codes = new[] { "OCO", "BEA" } },
+        new TeamInfo { name = "Alpine",          primary = Hex("0078C1"), secondary = Hex("FF87BC"), performance = 0.972f, drivers = new[] { "Pierre Gasly", "Franco Colapinto" },   codes = new[] { "GAS", "COL" } },
+        new TeamInfo { name = "Audi",            primary = Hex("3A3D40"), secondary = Hex("E1251B"), performance = 0.968f, drivers = new[] { "Nico Hulkenberg", "Gabriel Bortoleto" }, codes = new[] { "HUL", "BOR" } },
     };
 
     public static bool CareerMode;
@@ -109,6 +116,7 @@ public static class GameSession
             {
                 string json = PlayerPrefs.GetString("gp_settings", "");
                 settings = string.IsNullOrEmpty(json) ? new GameSettings() : JsonUtility.FromJson<GameSettings>(json);
+                settings.difficulty = Mathf.Clamp(settings.difficulty, 0, DifficultyNames.Length - 1);
             }
             return settings;
         }

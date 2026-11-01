@@ -23,8 +23,9 @@ public static class MenuSceneBuilder
         cam.clearFlags = CameraClearFlags.SolidColor;
         cam.backgroundColor = new Color(0.02f, 0.025f, 0.04f);
         cam.fieldOfView = 38f;
-        camGo.transform.position = new Vector3(-0.6f, 1.75f, -7.6f);
-        camGo.transform.LookAt(new Vector3(-2.3f, 0.45f, 0f));
+        // Frames the car in the right part of the screen, beside the menu panel
+        camGo.transform.position = new Vector3(-1.0f, 1.9f, -9.5f);
+        camGo.transform.LookAt(new Vector3(-2.2f, 0.5f, 0f));
 
         RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
         RenderSettings.ambientLight = new Color(0.12f, 0.13f, 0.16f);

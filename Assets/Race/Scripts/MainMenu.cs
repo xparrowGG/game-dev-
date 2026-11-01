@@ -206,6 +206,7 @@ public class MainMenu : MonoBehaviour
         IntSlider(ref y, x, w, s, "Opponents", ref quick.opponents, 1, 19);
         Selector(ref y, x, w, s, "AI difficulty", ref quick.difficulty, GameSession.DifficultyNames);
         Selector(ref y, x, w, s, "Starting grid", ref quick.grid, GameSession.GridNames);
+        Selector(ref y, x, w, s, "Starting tyres", ref quick.startCompound, Tyres.Names);
         var st = GameSession.Settings;
         Toggle(ref y, x, w, s, "ABS", ref st.abs);
         Toggle(ref y, x, w, s, "Traction control", ref st.tractionControl);
@@ -424,6 +425,7 @@ public class MainMenu : MonoBehaviour
             { "Throttle", "W / ↑", "Right trigger" }, { "Brake (hold at a stop: reverse)", "S / ↓", "Left trigger" },
             { "Steer", "A D / ← →", "Left stick" }, { "Gear up / down (manual)", "E / Q", "RB / LB" },
             { "ERS boost", "Left Shift", "X" }, { "Camera: TV pod / chase / cockpit", "C", "—" },
+            { "Request pit stop (box this lap)", "B", "—" }, { "Choose pit tyres S / M / H", "1 / 2 / 3", "—" },
             { "Back on track", "R", "—" }, { "Pause", "Esc / P", "Start" }, { "Show help", "H", "—" }, { "Results after the flag", "Tab", "—" }
         };
         var head = new GUIStyle(value) { alignment = TextAnchor.MiddleLeft };

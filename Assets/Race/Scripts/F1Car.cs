@@ -83,6 +83,10 @@ public class F1Car : VehicleBase
     public override float Rpm => rpm;
     public override float MaxRpm => redline;
     public override float ErsCharge => ersEnergy / ersCapacity;
+    [System.NonSerialized] public float tyreGripScale = 1f;   // compound and wear, set by the race manager
+    public bool OnGravel { get; private set; }
+    public float ThrottleInput { get; private set; }
+    public float TyreSlip { get; private set; }      // 0 = gripping, 1+ = sliding hard (for the tyre squeal)
     public float LateralG { get; private set; }
     public float LongitudinalG { get; private set; }
     public bool FrontWingLost { get; private set; }
@@ -201,8 +205,8 @@ public class F1Car : VehicleBase
 #endif
         float dt = Time.deltaTime;
         // Digital keys are eased in like a driver squeezing the pedal; analog input is used directly
-        inThrottle = analogPedals ? throttleKey : Mathf.MoveTowards(inThrottle, throttleKey, (throttleKey > inThrottle ? 4f : 8f) * dt);
-        inBrake = analogPedals ? brakeKey : Mathf.MoveTowards(inBrake, brakeKey, (brakeKey > inBrake ? 6f : 10f) * dt);
+        inThrottle = analogPedals ? throttleKey : Mathf.MoveTowards(inThrottle, throttleKey, (throttleKey > inThrottle ? 3.5f : 9f) * dt);
+        inBrake = analogPedals ? brakeKey : Mathf.MoveTowards(inBrake, brakeKey, (brakeKey > inBrake ? 8f : 12f) * dt);
         inSteer = analogSteer ? steerKey : steerKey;
 
         if (resetPressed)
@@ -217,13 +221,33 @@ public class F1Car : VehicleBase
         UpdateWheelVisuals(dt);
     }
 
-    void FixedUpdate() => SimStep(Time.fixedDeltaTime);
+    void FixedUpdate()
+    {
+        SimStep(Time.fixedDeltaTime);
+        if (rb.isKinematic)
+        {
+            // Pit lane: still count distance and time for the dashboard
+            Vector3 delta = transform.position - lastPos; delta.y = 0;
+            DistanceMeters += delta.magnitude;
+            lastPos = transform.position;
+            TripTime += Time.fixedDeltaTime;
+        }
+    }
 
     // ---------- Simulation ----------
+
+    // While the race manager drives the car through the pit lane (kinematic), it reports the speed here.
+    public void SetPitSpeed(float v)
+    {
+        Speed = v;
+        gear = v < 0.5f ? 0 : 2;
+        rpm = Mathf.Max(idleRpm + 1500f, v / tyreRadius * gearRatios[1] * 60f / (2f * Mathf.PI));
+    }
 
     public void SimStep(float dt)
     {
         if (!initialized) Init();
+        if (rb.isKinematic) { prevVelocity = Vector3.zero; return; }
 
         float throttle = externalInput ? extThrottle : inThrottle;
         float brake = externalInput ? extBrake : inBrake;
@@ -239,9 +263,17 @@ public class F1Car : VehicleBase
         Speed = vLong;
 
         // Steering: the assist narrows the lock at speed so keyboard input stays controllable
-        float lockAngle = steeringAssist ? Mathf.Lerp(maxSteerAngle, 4.5f, Mathf.Clamp01(absV / 80f)) : maxSteerAngle;
-        float rate = steeringAssist ? steerSpeed : steerSpeed * 1.5f;
-        steerAngle = Mathf.MoveTowards(steerAngle, Mathf.Clamp(steerIn, -1f, 1f) * lockAngle, rate * dt);
+        // Lateral grip available right now (tyres + downforce), used by the steering and stability assists
+        float wheelbase = frontAxleZ - rearAxleZ;
+        float latGrip = frictionCoef * tyreGripScale * (9.81f + 0.5f * airDensity * vLong * vLong * downforceArea / mass) * 0.9f;
+        // Assist: never ask for more steering angle than the tyres can use at this speed (no scrubbing, no snap)
+        float usable = Mathf.Atan(wheelbase * latGrip / Mathf.Max(vLong * vLong, 1f)) * Mathf.Rad2Deg + 1.5f;
+        float lockAngle = steeringAssist ? Mathf.Min(maxSteerAngle, usable) : maxSteerAngle;
+        float targetSteer = Mathf.Clamp(steerIn, -1f, 1f) * lockAngle;
+        // Quick at low speed, calm at high speed; returns to centre faster than it turns in
+        float rate = Mathf.Lerp(150f, 55f, Mathf.Clamp01(absV / 80f)) * (steeringAssist ? 1f : 1.4f);
+        if (Mathf.Abs(targetSteer) < Mathf.Abs(steerAngle)) rate *= 1.8f;
+        steerAngle = Mathf.MoveTowards(steerAngle, targetSteer, rate * dt);
 
         // Aerodynamics
         float q = 0.5f * airDensity * vLong * vLong;
@@ -307,6 +339,9 @@ public class F1Car : VehicleBase
         // Tyres
         WheelLocking = false;
         WheelSpinning = false;
+        OnGravel = false;
+        ThrottleInput = driveInput;
+        float slipMax = 0f;
         float cornerMass = mass * 0.25f;
         foreach (var w in wheels)
         {
@@ -318,12 +353,17 @@ public class F1Car : VehicleBase
             Vector3 pv = rb.GetPointVelocity(w.hit.point);
             float vx = Vector3.Dot(pv, wFwd), vy = Vector3.Dot(pv, wRight);
 
-            float mu = frictionCoef * Mathf.Clamp(1f - loadSensitivity * (w.load / nominalLoad - 1f), 0.75f, 1.25f);
+            float mu = frictionCoef * tyreGripScale * Mathf.Clamp(1f - loadSensitivity * (w.load / nominalLoad - 1f), 0.75f, 1.25f);
             if (w.front && FrontWingLost) mu *= 0.9f;
+            // Gravel trap: little grip and a lot of drag
+            var surface = w.hit.collider.sharedMaterial;
+            bool gravel = surface != null && surface.name.StartsWith("Gravel");
+            if (gravel) { mu *= 0.45f; OnGravel = true; }
             float maxF = mu * w.load;
 
             // Lateral: slip angle through a Pacejka-style curve (speed floor keeps it stable at a crawl)
             float slip = Mathf.Atan2(vy, Mathf.Max(Mathf.Abs(vx), 4f));
+            if (Mathf.Abs(vx) > 5f) slipMax = Mathf.Max(slipMax, Mathf.Abs(slip) / 0.12f);
             float fy = -maxF * Mathf.Sin(shapeFactor * Mathf.Atan(corneringStiffness * slip));
 
             // Longitudinal request: drive (rear, split equally) and brakes (with bias)
@@ -335,7 +375,7 @@ public class F1Car : VehicleBase
                 float hold = -vx * cornerMass / dt;          // force that would stop the wheel this step
                 fx += Mathf.Clamp(hold, -wheelBrake, wheelBrake);
             }
-            fx -= vx * 12f;                                   // rolling resistance
+            fx -= vx * (gravel ? 380f : 12f);                 // rolling resistance (gravel digs in)
 
             // Friction circle: assists keep the tyre at the limit, without them it locks or spins and loses side grip
             float latUse = Mathf.Abs(fy) / Mathf.Max(maxF, 1f);
@@ -358,6 +398,18 @@ public class F1Car : VehicleBase
                 }
             }
             rb.AddForceAtPosition(wFwd * fx + wRight * fy, w.hit.point);
+        }
+
+        TyreSlip = OnGravel ? 0f : Mathf.Max(slipMax - 0.6f, (WheelLocking || WheelSpinning) && absV > 5f ? 1f : 0f);
+
+        // Stability assist: if the car rotates faster than the steering asks for (oversteer), gently stop the slide
+        if (steeringAssist && anyGrounded && absV > 8f)
+        {
+            float desiredYaw = Mathf.Clamp(vLong * Mathf.Tan(steerAngle * Mathf.Deg2Rad) / wheelbase, -latGrip / absV, latGrip / absV);
+            float actualYaw = Vector3.Dot(rb.angularVelocity, transform.up);
+            float err = actualYaw - desiredYaw;
+            if (Mathf.Abs(actualYaw) > Mathf.Abs(desiredYaw) + 0.03f && Mathf.Sign(err) == Mathf.Sign(actualYaw))
+                rb.AddTorque(-transform.up * err * rb.inertiaTensor.y * 6f);
         }
 
         // Body wants to stay upright when nearly rolled over: help it back (driver can't, the marshals would)

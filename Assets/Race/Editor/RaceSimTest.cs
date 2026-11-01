@@ -36,9 +36,9 @@ public static class RaceSimTest
         var lapStart = new float[n];
         var log = new System.Text.StringBuilder();
         int overlaps = 0, finishedCount = 0;
-        float time = 0, topSpeed = 0, cooldown = 20f;   // keep simulating after the finish to check parking
+        float time = 0, topSpeed = 0, cooldown = 20f, fastest = float.MaxValue;   // keep simulating after the finish to check parking
         for (int i = 0; i < n; i++) finish[i] = -1;
-        while (time < 600f)
+        while (time < 2000f)
         {
             time += dt;
             bool allDone = true;
@@ -53,25 +53,34 @@ public static class RaceSimTest
                 int lapBefore = Mathf.FloorToInt(before / track.length), lapAfter = Mathf.FloorToInt(ais[i].progress / track.length);
                 if (lapAfter > lapBefore && lapAfter >= 1 && finish[i] < 0)
                 {
-                    log.AppendLine($"  {ais[i].driverName} lap {lapAfter}: {time - lapStart[i]:0.00}s");
+                    float lapTime = time - lapStart[i];
+                    if (i == 0) log.AppendLine($"  {ais[i].driverName} lap {lapAfter}: {lapTime:0.00}s");
+                    if (lapAfter > 1) fastest = Mathf.Min(fastest, lapTime);
                     lapStart[i] = time;
                 }
                 if (finish[i] < 0 && ais[i].progress >= manager.laps * track.length)
                 {
                     finish[i] = time;
-                    ais[i].parkProgress = manager.laps * track.length + 95f - 11f * finishedCount++;
+                    if (manager.pitEntryDistance > 0f)
+                    {
+                        // Same as the race: cool down and leave through the pit entry
+                        ais[i].parkProgress = Mathf.Floor(ais[i].progress / track.length) * track.length + manager.pitEntryDistance;
+                        ais[i].parkLane = manager.pitLaneOffset;
+                        ais[i].leaveAfterFinish = true;
+                    }
+                    else ais[i].parkProgress = manager.laps * track.length + 95f - 11f * finishedCount++;
                 }
                 if (finish[i] < 0) allDone = false;
             }
             for (int a = 0; a < n; a++)
                 for (int b = a + 1; b < n; b++)
-                    if (Mathf.Abs(racers[a].progress - racers[b].progress) < 4.4f && Mathf.Abs(racers[a].lateral - racers[b].lateral) < 1.8f) overlaps++;
+                    if (finish[a] < 0 && finish[b] < 0 && Mathf.Abs(racers[a].progress - racers[b].progress) < 4.4f && Mathf.Abs(racers[a].lateral - racers[b].lateral) < 1.8f) overlaps++;
             if (allDone) { if (cooldown <= 0) break; cooldown -= dt; }
         }
 
-        log.Insert(0, $"AI race sim ({manager.laps} laps, {track.length:0} m/lap, top speed {topSpeed * 3.6f:0} km/h, overlap frames {overlaps}):\n");
+        log.Insert(0, $"AI race sim ({manager.laps} laps, {track.length:0} m/lap, top speed {topSpeed * 3.6f:0} km/h, fastest lap {fastest:0.00}s, overlap frames {overlaps}):\n");
         for (int i = 0; i < n; i++)
-            log.AppendLine($"  FINISH {ais[i].driverName}: {finish[i]:0.00}s, parked {ais[i].progress - manager.laps * track.length:0.0} m past line, side offset {ais[i].lane:0.0} m, speed {ais[i].Speed:0.0} m/s");
+            log.AppendLine($"  FINISH {ais[i].driverName}: {finish[i]:0.00}s, stopped {ais[i].progress - manager.laps * track.length:0.0} m past line, side offset {ais[i].lane:0.0} m, left track: {!ais[i].gameObject.activeSelf} (parked flag {ais[i].Parked}, leave {ais[i].leaveAfterFinish}, park lane {ais[i].parkLane})");
         Debug.Log(log.ToString());
 
         for (int i = 0; i < n; i++)
@@ -79,6 +88,8 @@ public static class RaceSimTest
             ais[i].progress = startProgress[i];
             ais[i].lane = startLane[i];
             ais[i].parkProgress = float.NaN;
+            ais[i].leaveAfterFinish = false;
+            ais[i].gameObject.SetActive(true);
             ais[i].transform.SetPositionAndRotation(startPos[i], startRot[i]);
         }
         manager.racers.Clear();
