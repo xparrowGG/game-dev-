@@ -156,6 +156,9 @@ public static class MonacoBuilder
         for (int t = 0; t < GameSession.Teams.Length; t++) manager.boxDistances[t] = Mathf.Repeat(BoxD(t), track.length);
         manager.pitBoxes = pitBoxes;
         manager.marshalPosts = marshals;
+        manager.lineGreen = Mat("MC_MarkerGreen", new Color(0.1f, 0.8f, 0.3f), 0f, 0.2f, null, new Color(0.1f, 0.9f, 0.3f) * 0.6f);
+        manager.lineYellow = Mat("MC_MarkerYellow", new Color(1f, 0.85f, 0.1f), 0f, 0.2f, null, new Color(1f, 0.8f, 0.05f) * 0.7f);
+        manager.lineRed = Mat("MC_MarkerRed", new Color(0.95f, 0.1f, 0.1f), 0f, 0.2f, null, new Color(1f, 0.08f, 0.05f) * 0.8f);
 
         // Audio: a 3D engine voice that follows the nearest rival, and the crowd/city ambience
         var rivalGo = Child("RivalEngineAudio", root);
@@ -168,6 +171,7 @@ public static class MonacoBuilder
         manager.ambient = ambGo.AddComponent<AmbientAudio>();
         SetupCamera(player);
 
+        PlayerSettings.productName = GameSession.GameTitle;
         AssetDatabase.SaveAssets();
         EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
         AddSceneToBuild(EditorSceneManager.GetActiveScene().path, -1);
@@ -566,6 +570,9 @@ public static class MonacoBuilder
                         h = Mathf.Lerp(h, -4f, Mathf.InverseLerp(22f, 40f, dmin));
                 }
                 else h = field - 0.5f;
+                // Keep the ground well below the road and pavements so it never shows through as bumps
+                if (near >= 0 && dmin < 18f)
+                    h = Mathf.Min(h, track.points[near].y - Mathf.Lerp(1.6f, 0.4f, Mathf.InverseLerp(10f, 18f, dmin)));
                 // Harbour basin
                 float hd = Flat(p - harbour).magnitude;
                 if (hd < 150f && dmin > 18f) h = Mathf.Min(h, Mathf.Lerp(-4f, h, Mathf.InverseLerp(110f, 150f, hd)));
@@ -692,8 +699,9 @@ public static class MonacoBuilder
         Extrude("EdgeLineR", parent, new[] { new Vector2(HalfWidth - 0.15f, 0.04f), new Vector2(HalfWidth, 0.04f) }, null, i => true, white, 4f, false);
         var red = Mat("MC_KerbRed", new Color(0.82f, 0.08f, 0.08f), 0f, 0.45f);
         var kw = Mat("MC_KerbWhite", new Color(0.95f, 0.95f, 0.95f), 0f, 0.45f);
-        var kR = new[] { new Vector2(HalfWidth, 0.045f), new Vector2(KerbEnd, 0.075f) };
-        var kL = new[] { new Vector2(-KerbEnd, 0.075f), new Vector2(-HalfWidth, 0.045f) };
+        // Flat painted kerbs, only a couple of centimetres proud of the asphalt
+        var kR = new[] { new Vector2(HalfWidth, 0.036f), new Vector2(KerbEnd, 0.05f) };
+        var kL = new[] { new Vector2(-KerbEnd, 0.05f), new Vector2(-HalfWidth, 0.036f) };
         Extrude("KerbRedR", parent, kR, null, i => Corner(i) && (i / 2) % 2 == 0, red, 4f, false);
         Extrude("KerbWhiteR", parent, kR, null, i => Corner(i) && (i / 2) % 2 == 1, kw, 4f, false);
         Extrude("KerbRedL", parent, kL, null, i => Corner(i) && (i / 2) % 2 == 0, red, 4f, false);
@@ -724,7 +732,14 @@ public static class MonacoBuilder
             ExtrudeVar("Barrier" + sn + "_Red", parent, i => wall(i, side, 0f), null, i => present(i) && Corner(i) && (i / 3) % 2 == 0, red, 4f, false);
             ExtrudeVar("Barrier" + sn + "_White", parent, i => wall(i, side, 0f), null, i => present(i) && Corner(i) && (i / 3) % 2 == 1, white, 4f, false);
             // Collision sits in front of any tyre wall, so cars hit the tyres rather than pass into them
-            var col = ExtrudeVar("Barrier" + sn + "_Collider", parent, i => wall(i, side, TyreWallAt(i, side) ? 0.9f : 0f), null, present, null, 4f, true);
+            // The collision wall is 3 m tall (taller than the visible barrier) so a car can never ride up over its top edge
+            Func<int, Vector2[]> tall = i =>
+            {
+                var p = wall(i, side, TyreWallAt(i, side) ? 0.9f : 0f);
+                p[1].y = 3f; p[2].y = 3f;
+                return p;
+            };
+            var col = ExtrudeVar("Barrier" + sn + "_Collider", parent, tall, null, present, null, 4f, true);
             Object.DestroyImmediate(col.GetComponent<MeshRenderer>());
         }
 
@@ -1424,6 +1439,8 @@ public static class MonacoBuilder
             var rb = car.AddComponent<Rigidbody>();
             rb.isKinematic = true;
             rb.interpolation = RigidbodyInterpolation.Interpolate;
+            // Contact with the player is resolved by F1Car (horizontal, momentum-shared) instead of the solver
+            car.GetComponent<BoxCollider>().isTrigger = true;
             var ai = car.AddComponent<RaceAI>();
             ai.driverName = "Driver " + k;
             ai.maxSpeed = 84f;

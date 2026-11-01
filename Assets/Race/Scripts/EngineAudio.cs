@@ -24,7 +24,7 @@ public class EngineAudio : MonoBehaviour
     int sampleRate = 48000;
 
     AudioSource oneShots;
-    static AudioClip clunk, thud, gun;
+    static AudioClip clunk, thud, gun, radio;
     int lastGear;
     float lastImpact = -1f, smoothThrottle, smoothRpm = 4000f;
 
@@ -84,6 +84,11 @@ public class EngineAudio : MonoBehaviour
     public void PlayPitGun()
     {
         if (oneShots != null && gun != null) oneShots.PlayOneShot(gun, 0.7f * volume);
+    }
+
+    public void PlayRadio()
+    {
+        if (oneShots != null && radio != null) oneShots.PlayOneShot(radio, 0.55f);
     }
 
     float Noise()
@@ -156,6 +161,14 @@ public class EngineAudio : MonoBehaviour
             Mathf.Sin(t * 2f * Mathf.PI * (70f - 30f * t)) * Mathf.Exp(-t * 7f) * 0.9f
           + Mathf.Sin(t * 2f * Mathf.PI * 820f) * Mathf.Exp(-t * 9f) * 0.25f
           + N() * Mathf.Exp(-t * 12f) * 0.5f);
+        // Team radio: squelch, two short beeps, then a little channel hiss
+        radio = Make("RadioBeep", sr, 0.55f, (t, n) =>
+        {
+            float squelch = t < 0.06f ? N() * 0.6f * (1f - t / 0.06f) : 0f;
+            float beep = (t > 0.08f && t < 0.16f) || (t > 0.2f && t < 0.28f) ? Mathf.Sin(t * 2f * Mathf.PI * 1250f) * 0.45f : 0f;
+            float hiss = t > 0.3f ? N() * 0.08f * (1f - (t - 0.3f) / 0.25f) : 0f;
+            return squelch + beep + hiss;
+        });
         // Pit wheel gun: four quick pneumatic "brrrt" bursts
         gun = Make("WheelGun", sr, 1.4f, (t, n) =>
         {

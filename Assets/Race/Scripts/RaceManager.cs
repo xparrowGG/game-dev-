@@ -136,6 +136,111 @@ public class RaceManager : MonoBehaviour
         if (useSession && GameSession.Settings.brakingLine && lineGreen != null) BuildBrakingMarkers();
     }
 
+    // ---------- Team radio: the race engineer's short messages ----------
+
+    string radioText = "";
+    float radioTimer, lastRadioTime = -100f, posTimer, lastPosMsgTime = -100f, lastGravelMsg = -100f, lastYellowMsg = -100f;
+    int lastPos = -1;
+    bool tyreWarned, stopWarned, lastLapSaid;
+
+    void Radio(string message, bool priority = false)
+    {
+        if (useSession && !GameSession.Settings.teamRadio) return;
+        if (!priority && Time.time - lastRadioTime < 5f) return;
+        radioText = message;
+        radioTimer = 6f;
+        lastRadioTime = Time.time;
+        if (playerAudio != null) playerAudio.PlayRadio();
+    }
+
+    string GapAheadText(List<Racer> standings)
+    {
+        int i = standings.IndexOf(playerRacer);
+        if (i <= 0) return "you're leading";
+        var ahead = standings[i - 1];
+        float gap = (ahead.progress - playerRacer.progress) / Mathf.Max(player.Speed, 20f);
+        return "gap to " + ahead.code + " is " + gap.ToString("0.0") + " seconds";
+    }
+
+    void UpdateRadio(List<Racer> standings)
+    {
+        radioTimer -= Time.deltaTime;
+        if (state != State.Racing || playerRacer.finished) return;
+        int pos = standings.IndexOf(playerRacer) + 1;
+        posTimer -= Time.deltaTime;
+        if (posTimer <= 0f)
+        {
+            posTimer = 1f;
+            if (lastPos > 0 && pos != lastPos && Time.time - lastPosMsgTime > 8f && raceTime > 8f)
+            {
+                lastPosMsgTime = Time.time;
+                Radio(pos < lastPos ? "Great move! You're P" + pos + ". Keep it tidy." : "Lost a place, P" + pos + " now. Stay calm, we'll get it back.");
+            }
+            lastPos = pos;
+        }
+        if (HasPitLane)
+        {
+            if (!tyreWarned && playerWear > 0.6f) { tyreWarned = true; Radio("Tyres are going off. Box this lap if you can, press B.", true); }
+            int lap = Mathf.Clamp(crossings, 1, laps);
+            if (!stopWarned && MandatoryStop && CompoundsUsedCount() < 2 && laps - lap <= 2 && laps >= 4)
+            { stopWarned = true; Radio("We still need a pit stop for the second compound. Box, box!", true); }
+            if (player is F1Car f1 && f1.OnGravel && Time.time - lastGravelMsg > 15f) { lastGravelMsg = Time.time; Radio("Off track. Rejoin safely and watch the limits."); }
+            if (Time.time - incidentTime < 2f && Time.time - lastYellowMsg > 12f && InWindow(prevD, incidentD - 300f, incidentD + 20f, track.length))
+            { lastYellowMsg = Time.time; Radio("Yellow flag ahead, careful. No overtaking."); }
+        }
+        if (!lastLapSaid && crossings == laps && laps > 1) { lastLapSaid = true; Radio("Last lap! Bring it home.", true); }
+    }
+
+    void DrawRadio(float s)
+    {
+        if (radioTimer <= 0f || radioText.Length == 0) return;
+        float alpha = Mathf.Clamp01(radioTimer * 2f);
+        Rect p = new Rect(Screen.width / 2f - 340 * s, Screen.height - 330 * s, 680 * s, 70 * s);
+        Fill(p, new Color(0.03f, 0.04f, 0.07f, 0.88f * alpha), 12 * s);
+        Fill(new Rect(p.x, p.y, 8 * s, p.height), new Color(playerRacer.color.r, playerRacer.color.g, playerRacer.color.b, alpha), 4 * s);
+        // little animated voice meter
+        for (int k = 0; k < 5; k++)
+        {
+            float h = (10f + 14f * Mathf.Abs(Mathf.Sin(Time.time * (9f + k * 2.3f) + k))) * s;
+            Fill(new Rect(p.x + 22 * s + k * 7 * s, p.y + p.height / 2f - h / 2f, 4 * s, h), new Color(0.4f, 1f, 0.6f, alpha), 2 * s);
+        }
+        var head = new GUIStyle(small) { alignment = TextAnchor.MiddleLeft, fontStyle = FontStyle.Bold };
+        head.normal.textColor = new Color(0.4f, 1f, 0.6f, alpha);
+        GUI.Label(new Rect(p.x + 70 * s, p.y + 6 * s, p.width, 20 * s), "TEAM RADIO  ·  RACE ENGINEER", head);
+        var body = new GUIStyle(mid) { fontStyle = FontStyle.Normal, fontSize = Mathf.RoundToInt(17 * s) };
+        body.normal.textColor = new Color(1f, 1f, 1f, alpha);
+        GUI.Label(new Rect(p.x + 70 * s, p.y + 28 * s, p.width - 80 * s, 34 * s), "\"" + radioText + "\"", body);
+    }
+
+    // F1-style name plates above the cars near you: position, team colour, driver code
+    void DrawNameTags(float s, List<Racer> standings)
+    {
+        if (useSession && !GameSession.Settings.nameTags) return;
+        var cam = Camera.main;
+        if (cam == null) return;
+        var st = new GUIStyle(mid) { fontSize = Mathf.RoundToInt(13 * s), alignment = TextAnchor.MiddleLeft };
+        foreach (var r in racers)
+        {
+            if (r.isPlayer || !r.ai.gameObject.activeSelf) continue;
+            Vector3 world = r.tr.position + Vector3.up * 1.6f;
+            float dist = Vector3.Distance(cam.transform.position, world);
+            if (dist > 90f) continue;
+            Vector3 sp = cam.WorldToScreenPoint(world);
+            if (sp.z <= 0f) continue;
+            float k = Mathf.Lerp(1.1f, 0.7f, dist / 90f) * s;
+            float w = 96 * k, h = 24 * k;
+            Rect p = new Rect(sp.x - w / 2f, Screen.height - sp.y - h, w, h);
+            Fill(p, new Color(0.03f, 0.04f, 0.07f, 0.8f), 4 * k);
+            Fill(new Rect(p.x, p.y, 26 * k, h), new Color(1f, 1f, 1f, 0.95f), 4 * k);
+            var ps = new GUIStyle(st) { alignment = TextAnchor.MiddleCenter, fontSize = Mathf.RoundToInt(13 * k) };
+            ps.normal.textColor = Color.black;
+            GUI.Label(new Rect(p.x, p.y, 26 * k, h), (standings.IndexOf(r) + 1).ToString(), ps);
+            Fill(new Rect(p.x + 28 * k, p.y + 4 * k, 4 * k, h - 8 * k), r.color);
+            var cs = new GUIStyle(st) { fontSize = Mathf.RoundToInt(13 * k) };
+            GUI.Label(new Rect(p.x + 36 * k, p.y, w - 36 * k, h), r.code, cs);
+        }
+    }
+
     // ---------- Braking markers (green = full throttle, yellow = get ready, red = brake now) ----------
 
     [Header("Braking markers")]
@@ -446,8 +551,12 @@ public class RaceManager : MonoBehaviour
                 player.inputEnabled = true;
                 goBannerTimer = 1.5f;
                 if (ambient != null) ambient.Cheer();
+                Radio("Lights out! Clean launch, careful into Sainte Devote.", true);
             }
         }
+
+        UpdateBrakingMarkers();
+        UpdateRadio(Standings());
 
         // The nearest rival is voiced by a 3D engine sound that follows it
         if (rivalAudio != null)
@@ -617,6 +726,7 @@ public class RaceManager : MonoBehaviour
                     rb.linearVelocity = track.TangentAt(pitS) * pitV;
                     player.inputEnabled = !playerRacer.finished;
                     pitPhase = PitPhase.None;
+                    Radio("Good stop! " + Tyres.Names[(int)playerCompound] + " tyres on. Push now.", true);
                     return;
                 }
                 break;
@@ -641,9 +751,15 @@ public class RaceManager : MonoBehaviour
         if (crossings < 2 || crossings - 1 <= lapsTimed || playerRacer.finished) return;
         lapsTimed = crossings - 1;
         lastLap = raceTime - lapStartTime;
-        if (bestLap < 0 || lastLap < bestLap) bestLap = lastLap;
+        bool best = bestLap < 0 || lastLap < bestLap;
+        if (best) bestLap = lastLap;
         lapStartTime = raceTime;
         if (lapsTimed >= laps || winner != null) Finish(playerRacer);
+        else
+        {
+            var st = Standings();
+            Radio("Lap " + lapsTimed + ": " + FormatTime(lastLap) + (best ? ", our best so far. " : ". ") + "P" + (st.IndexOf(playerRacer) + 1) + ", " + GapAheadText(st) + ".");
+        }
     }
 
     void Finish(Racer r)
@@ -662,6 +778,8 @@ public class RaceManager : MonoBehaviour
                 r.penalty = 30f;
                 penaltyNote = "+30 s penalty: you did not use a second tyre compound";
             }
+            int pos = Standings().IndexOf(r) + 1;
+            Radio("P" + pos + "! " + (pos == 1 ? "We won it! What a drive!" : pos <= 3 ? "That's a podium, great job." : pos <= 10 ? "Points finish, well done." : "Tough one. We'll come back stronger."), true);
         }
         else
         {
@@ -799,6 +917,8 @@ public class RaceManager : MonoBehaviour
             GUI.Label(new Rect(Screen.width / 2f - 200 * s, 128 * s, 400 * s, 34 * s), "CHEQUERED FLAG - finish this lap", st);
         }
 
+        DrawNameTags(s, standings);
+        DrawRadio(s);
         if (HasPitLane && player is F1Car) DrawTyresAndPit(s);
 
         if (playerRacer.finished && resultsTimer > 0) DrawResults(s, standings);

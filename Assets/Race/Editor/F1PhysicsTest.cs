@@ -85,6 +85,34 @@ public static class F1PhysicsTest
             while (car.SpeedKmh > 1f && tb < 20f) { Step(car, 0, 1, 0); tb += Dt; }
             log.AppendLine($"  No-ABS braking {vBefore:0}->0: {Vector3.Distance(pB, carGo.transform.position):0} m, stable up.y {carGo.transform.up.y:0.000}");
 
+            // 5. Crashes into a wall: head-on and glancing. Measure lift-off and bounce-back.
+            car.abs = true;
+            foreach (float angle in new[] { 0f, 25f })
+            {
+                var wall = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                wall.name = "TestWall";
+                wall.transform.position = new Vector3(0, -4998.5f, 9120f);
+                wall.transform.localScale = new Vector3(400f, 3f, 1f);
+                Physics.SyncTransforms();
+                Place(car, new Vector3(0, -4999.95f, 9000f));
+                car.Teleport(new Vector3(0, -4999.95f, 9000f), Quaternion.Euler(0, angle, 0));
+                Physics.SyncTransforms();
+                Run(car, 1f, 0, 0, 0, null);
+                // accelerate to ~150 km/h, then coast into the wall
+                float t2 = 0;
+                while (car.SpeedKmh < 150f && t2 < 15f) { Step(car, 1, 0, 0); t2 += Dt; }
+                float baseY = carGo.transform.position.y, maxRise = 0f, minVz = 0f, maxTilt = 0f;
+                for (float tt = 0; tt < 6f; tt += Dt)
+                {
+                    Step(car, 0, 0, 0);
+                    maxRise = Mathf.Max(maxRise, carGo.transform.position.y - baseY);
+                    minVz = Mathf.Min(minVz, rb.linearVelocity.z);
+                    maxTilt = Mathf.Max(maxTilt, Vector3.Angle(carGo.transform.up, Vector3.up));
+                }
+                log.AppendLine($"  Wall hit at {angle}° from 150 km/h: reached wall {carGo.transform.position.z > 9110f}, max lift {maxRise:0.00} m, max bounce-back {-minVz:0.0} m/s, max tilt {maxTilt:0.0}°, final speed {car.SpeedKmh:0} km/h, z {carGo.transform.position.z:0}");
+                Object.DestroyImmediate(wall);
+            }
+
             bool nan = float.IsNaN(carGo.transform.position.x);
             log.AppendLine(nan ? "  ERROR: NaN position" : "  No NaN values.");
         }

@@ -136,8 +136,15 @@ public class F1Car : VehicleBase
         rb.constraints = RigidbodyConstraints.None;
         rb.interpolation = RigidbodyInterpolation.Interpolate;
         rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
-        rb.maxDepenetrationVelocity = 3f;
+        rb.maxDepenetrationVelocity = 1f;   // walls push the car out gently, never fling it
         bodyCollider = GetComponent<Collider>();
+        // Carbon on steel: no bounce, low friction so the car scrapes along a wall instead of hopping
+        if (bodyCollider != null)
+            bodyCollider.sharedMaterial = new PhysicsMaterial("F1Body")
+            {
+                bounciness = 0f, bounceCombine = PhysicsMaterialCombine.Minimum,
+                dynamicFriction = 0.2f, staticFriction = 0.2f, frictionCombine = PhysicsMaterialCombine.Minimum
+            };
         var sparksTf = transform.Find("Sparks");
         if (sparksTf != null) sparks = sparksTf.GetComponent<ParticleSystem>();
 
@@ -317,8 +324,7 @@ public class F1Car : VehicleBase
             Vector3 top = transform.TransformPoint(w.attach);
             float rest = restLength + tyreRadius;
             w.prevCompression = w.compression;
-            w.grounded = Physics.Raycast(top, -transform.up, out w.hit, rest + 0.15f, ~0, QueryTriggerInteraction.Ignore)
-                         && w.hit.distance <= rest + 0.01f && w.hit.collider != bodyCollider;
+            w.grounded = GroundRay(top, -transform.up, rest + 0.15f, out w.hit) && w.hit.distance <= rest + 0.01f;
             w.compression = w.grounded ? rest - w.hit.distance : 0f;
             if (w.grounded) anyGrounded = true;
         }
@@ -410,6 +416,17 @@ public class F1Car : VehicleBase
             float err = actualYaw - desiredYaw;
             if (Mathf.Abs(actualYaw) > Mathf.Abs(desiredYaw) + 0.03f && Mathf.Sign(err) == Mathf.Sign(actualYaw))
                 rb.AddTorque(-transform.up * err * rb.inertiaTensor.y * 6f);
+        }
+
+        // After a hit: no launches. An F1 car stays on the ground, so kill any upward kick and calm the roll/pitch.
+        if (Time.time - LastImpactTime < 0.8f && anyGrounded)
+        {
+            Vector3 v = rb.linearVelocity;
+            if (v.y > 0.6f) { v.y = 0.6f; rb.linearVelocity = v; }
+            Vector3 local = transform.InverseTransformDirection(rb.angularVelocity);
+            local.x *= 0.85f;
+            local.z *= 0.85f;
+            rb.angularVelocity = transform.TransformDirection(local);
         }
 
         // Body wants to stay upright when nearly rolled over: help it back (driver can't, the marshals would)
@@ -504,21 +521,72 @@ public class F1Car : VehicleBase
 
     // ---------- Crashes ----------
 
+    // Wheel sensors only count the racing surface: never another car, debris, or the side/top of a barrier
+    static readonly RaycastHit[] rayHits = new RaycastHit[8];
+    bool GroundRay(Vector3 origin, Vector3 dir, float length, out RaycastHit best)
+    {
+        best = default;
+        int n = Physics.RaycastNonAlloc(origin, dir, rayHits, length, ~0, QueryTriggerInteraction.Ignore);
+        float bestDist = float.MaxValue;
+        for (int i = 0; i < n; i++)
+        {
+            var h = rayHits[i];
+            if (h.collider == bodyCollider || h.collider.attachedRigidbody != null) continue;
+            if (h.normal.y < 0.6f || h.collider.name.StartsWith("Barrier")) continue;
+            if (h.distance < bestDist) { bestDist = h.distance; best = h; }
+        }
+        return bestDist < float.MaxValue;
+    }
+
+    // Walls and barriers: sparks, sound, damage. The physics solver handles the contact itself
+    // (zero bounce material, gentle push-out); only the horizontal part of the hit counts as impact.
     void OnCollisionEnter(Collision c)
     {
-        float dv = c.impulse.magnitude / mass;
+        if (c.collider.attachedRigidbody != null && c.collider.attachedRigidbody.isKinematic && c.collider.GetComponentInParent<RaceAI>() != null) return;
+        Vector3 impulse = c.impulse; impulse.y = 0f;
+        float dv = impulse.magnitude / mass;
         if (dv < 1.5f) return;
         ContactPoint cp = c.GetContact(0);
+        RegisterImpact(dv, cp.point);
+    }
+
+    void RegisterImpact(float dv, Vector3 point)
+    {
         LastImpactStrength = dv * 2f;
         LastImpactTime = Time.time;
         if (sparks != null)
         {
-            sparks.transform.position = cp.point;
+            sparks.transform.position = point;
             sparks.Emit(Mathf.RoundToInt(Mathf.Clamp(dv * 10f, 8f, 150f)));
         }
-        var ai = c.collider.GetComponentInParent<RaceAI>();
-        if (ai != null) ai.ApplyImpact(-c.impulse / mass, cp.point);
-        if (dv > wingBreakDeltaV && transform.InverseTransformPoint(cp.point).z > 2.0f) BreakFrontWing();
+        if (dv > wingBreakDeltaV && transform.InverseTransformPoint(point).z > 2.0f) BreakFrontWing();
+    }
+
+    // Car-to-car contact (rival cars are triggers): resolved here in the horizontal plane only, as two
+    // cars of equal mass touching — they push apart and share momentum, nobody gets launched.
+    void OnTriggerStay(Collider other)
+    {
+        var ai = other.GetComponentInParent<RaceAI>();
+        if (ai == null || rb.isKinematic || bodyCollider == null) return;
+        if (!Physics.ComputePenetration(bodyCollider, rb.position, rb.rotation, other, other.transform.position, other.transform.rotation,
+                                        out Vector3 dir, out float depth)) return;
+        dir.y = 0f;
+        if (dir.sqrMagnitude < 1e-4f) return;
+        dir.Normalize();
+        // Separate: we take the whole correction (the rival is on its line), limited per step so it's smooth
+        rb.position += dir * Mathf.Min(depth, 0.08f);
+        // Momentum: remove the closing speed along the contact direction and share it
+        Vector3 v = rb.linearVelocity;
+        Vector3 vRel = v - ai.Velocity;
+        float closing = Vector3.Dot(vRel, dir);
+        if (closing < 0f)
+        {
+            Vector3 change = -dir * closing * 0.55f;      // a little energy is lost in the hit
+            rb.linearVelocity = v + change;
+            ai.ApplyImpact(-change * 0.8f, other.ClosestPoint(rb.position));
+            float dv = change.magnitude;
+            if (dv > 1.5f && Time.time - LastImpactTime > 0.3f) RegisterImpact(dv, other.ClosestPoint(rb.position));
+        }
     }
 
     void BreakFrontWing()
