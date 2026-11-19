@@ -37,8 +37,35 @@ public class RaceManager : MonoBehaviour
     public AmbientAudio ambient;
     EngineAudio playerAudio;
 
+    [Header("Real circuit data")]
+    public bool snapToGround;                 // AI cars follow the scanned surface (camber, banking, kerbs)
+    public float pitProfileStart;             // track distance of pitProfile[0]
+    public float pitProfileStep = 2f;
+    public float[] pitProfile;                // lateral offset of the real pit lane, sampled along the track
+    public Vector2[] drsZones;                // (start, end) track distances where DRS can be opened
+
+    public float PitSide => pitLaneOffset >= 0f ? 1f : -1f;
+    public float PitLimit => Mathf.Abs(pitLaneOffset) + (pitProfile != null && pitProfile.Length > 0 ? 6f : 0.5f);
+
+    // Lateral position of the pit lane at a track distance (follows the real pit lane where it is known).
+    public float PitLat(float d)
+    {
+        if (pitProfile == null || pitProfile.Length < 2 || track == null) return pitLaneOffset;
+        float u = Mathf.Repeat(d - pitProfileStart, track.length) / pitProfileStep;
+        if (u > pitProfile.Length - 1) return pitLaneOffset;
+        int i = Mathf.Min((int)u, pitProfile.Length - 2);
+        return Mathf.Lerp(pitProfile[i], pitProfile[i + 1], u - i);
+    }
+
+    public bool InDrsZone(float d)
+    {
+        if (drsZones == null || track == null) return false;
+        foreach (var z in drsZones) if (InWindow(d, z.x, z.y, track.length)) return true;
+        return false;
+    }
+
     public bool HasPitLane => boxDistances != null && boxDistances.Length > 0;
-    public bool MandatoryStop => HasPitLane && laps >= 3;
+    public bool MandatoryStop => HasPitLane && laps >= 3 && !(useSession && GameSession.Race.timeTrial && !GameSession.CareerMode);
     public float BoxDistance(int team) => boxDistances[Mathf.Clamp(team, 0, boxDistances.Length - 1)];
     public static bool InWindow(float d, float a, float b, float length) => Mathf.Repeat(d - a, length) <= Mathf.Repeat(b - a, length);
 
@@ -89,7 +116,12 @@ public class RaceManager : MonoBehaviour
     void Awake()
     {
         // Opened directly (e.g. Play in this scene)? Start the game at the main menu like a real game.
-        if (useSession && !GameSession.StartedFromMenu && Application.CanStreamedLevelBeLoaded(GameSession.MenuScene))
+        bool directTest = false;
+#if UNITY_EDITOR
+        directTest = UnityEditor.SessionState.GetBool("xparrow_direct_play", false);
+        UnityEditor.SessionState.SetBool("xparrow_direct_play", false);
+#endif
+        if (useSession && !GameSession.StartedFromMenu && !directTest && Application.CanStreamedLevelBeLoaded(GameSession.MenuScene))
         {
             redirecting = true;
             SceneManager.LoadScene(GameSession.MenuScene);
@@ -327,7 +359,7 @@ public class RaceManager : MonoBehaviour
         var playerTeam = GameSession.Teams[setup.team];
 
         // Player car: team livery, team pace, career upgrades, assists
-        ApplyLivery(player.gameObject, playerTeam.primary, playerTeam.secondary, new Color(1f, 0.85f, 0.1f));
+        ApplyLivery(player.gameObject, playerTeam.primary, playerTeam.secondary, new Color(1f, 0.85f, 0.1f), playerTeam.livery);
         if (player is F1Car f1)
         {
             float teamFactor = 1f + (playerTeam.performance - 1f) * 1.5f;
@@ -341,14 +373,19 @@ public class RaceManager : MonoBehaviour
             f1.autoGearbox = settings.autoGearbox;
         }
         var cam = Camera.main != null ? Camera.main.GetComponent<ChaseCamera>() : null;
-        if (cam != null) cam.view = (ChaseCamera.View)Mathf.Clamp(settings.defaultCamera, 0, 2);
+        if (cam != null)
+        {
+            cam.view = (ChaseCamera.View)Mathf.Clamp(settings.defaultCamera, 0, 2);
+            cam.baseFov = settings.fieldOfView;
+            cam.shake = settings.cameraShake;
+        }
 
         playerRacer = new Racer { name = setup.driverName, code = setup.driverCode, color = playerTeam.primary, team = setup.team, isPlayer = true, tr = player.transform };
         racers.Add(playerRacer);
 
         // Rivals: one car per remaining driver, as many as the opponent setting allows
         var rivals = field.FindAll(d => !d.isPlayer);
-        int count = Mathf.Clamp(setup.opponents, 0, Mathf.Min(rivals.Count, ais.Length));
+        int count = setup.timeTrial && !GameSession.CareerMode ? 0 : Mathf.Clamp(setup.opponents, 0, Mathf.Min(rivals.Count, ais.Length));
         var scores = new Dictionary<Racer, float>();
         for (int i = 0; i < ais.Length; i++)
         {
@@ -365,7 +402,7 @@ public class RaceManager : MonoBehaviour
             ai.maxSpeed *= Mathf.Sqrt(pace);
             ai.cornerGrip *= pace * pace;
             ai.aeroGrip *= pace;
-            ApplyLivery(ai.gameObject, team.primary, team.secondary, Color.HSVToRGB(Random.value, 0.6f, 0.95f));
+            ApplyLivery(ai.gameObject, team.primary, team.secondary, Color.HSVToRGB(Random.value, 0.6f, 0.95f), team.livery);
             var r = new Racer { name = d.name, code = d.code, color = team.primary, team = d.team, ai = ai, tr = ai.transform };
             racers.Add(r);
             scores[r] = pace * aiSkill + Random.Range(-0.008f, 0.008f);
@@ -460,14 +497,21 @@ public class RaceManager : MonoBehaviour
     }
 
     // Recolour a car's livery materials (shared assets) with per-car instances.
-    public static void ApplyLivery(GameObject car, Color primary, Color secondary, Color helmet)
+    public static void ApplyLivery(GameObject car, Color primary, Color secondary, Color helmet, int livery = -1)
     {
         var cache = new Dictionary<Material, Material>();
+        // The 2026 car model carries the whole livery in one texture set per team
+        Material teamMat = livery >= 0 ? Resources.Load<Material>("F1Liveries/Livery_" + livery.ToString("00")) : null;
         foreach (var r in car.GetComponentsInChildren<Renderer>(true))
         {
             var src = r.sharedMaterial;
             if (src == null) continue;
             string n = src.name.Replace(" (Instance)", "");
+            if (n.StartsWith("Livery_") || n.StartsWith("Mat_Team_"))
+            {
+                if (teamMat != null) r.sharedMaterial = teamMat;
+                continue;
+            }
             Color? col = n == "F1_Livery" ? primary : n == "F1_Accent" ? secondary : n == "F1_Helmet" ? helmet
                        : n == "F1_WheelCover" ? Color.Lerp(secondary, Color.black, 0.35f) : (Color?)null;
             if (!col.HasValue) continue;
@@ -622,9 +666,19 @@ public class RaceManager : MonoBehaviour
             f1.tyreGripScale = Tyres.GripFactor(playerCompound, playerWear);
 
             if (pitPhase == PitPhase.None && racing && !playerRacer.finished && player.Speed > 3f
-                && InWindow(prevD, pitEntryStart, pitEntryEnd, track.length) && (lateral > 6.8f || pitRequested))
+                && InWindow(prevD, pitEntryStart, pitEntryEnd, track.length) && (lateral * PitSide > Mathf.Max(6.8f, track.halfWidth + 0.8f) || pitRequested))
                 StartPlayerPit(lateral);
             UpdatePlayerPit(dt);
+        }
+
+        // DRS: in an activation zone, from lap 2, within one second of the car ahead (always in time trial)
+        if (player is F1Car drsCar)
+        {
+            bool zone = drsZones != null && drsZones.Length > 0 && racing && pitPhase == PitPhase.None && !playerRacer.finished && InDrsZone(prevD);
+            bool eligible = racers.Count <= 1 || crossings >= 2 && GapAheadSeconds() < 1f;
+            drsCar.drsAvailable = zone && eligible;
+            drsCar.drsAuto = useSession && GameSession.Settings.drsAssist;
+            DrsZoneNow = zone;
         }
 
         foreach (var r in racers)
@@ -647,6 +701,38 @@ public class RaceManager : MonoBehaviour
     // From the pit entry line the stop is automated, as in F1 games: limiter on, the car drives to the
     // team's box, the crew changes the tyres, the release light goes green and the car rejoins at the exit.
 
+    public bool DrsZoneNow { get; private set; }
+
+    float GapAheadSeconds()
+    {
+        float best = float.MaxValue;
+        foreach (var r in racers)
+        {
+            if (r.isPlayer || r.finished || r.ai == null || !r.ai.gameObject.activeSelf) continue;
+            float gap = r.progress - playerRacer.progress;
+            if (gap > 0f && gap < best) best = gap;
+        }
+        return best == float.MaxValue ? float.MaxValue : best / Mathf.Max(player.Speed, 10f);
+    }
+
+    float body0Y = -1e6f;
+    static readonly RaycastHit[] groundHits = new RaycastHit[8];
+
+    // Height of the drivable surface under a point (ignores cars, walls and anything above head height).
+    public static bool GroundAt(Vector3 p, out float y)
+    {
+        y = p.y;
+        int n = Physics.RaycastNonAlloc(p + Vector3.up * 2.5f, Vector3.down, groundHits, 6f, ~0, QueryTriggerInteraction.Ignore);
+        float best = float.MaxValue; bool found = false;
+        for (int i = 0; i < n; i++)
+        {
+            var h = groundHits[i];
+            if (h.collider.attachedRigidbody != null || h.normal.y < 0.7f) continue;
+            if (h.distance < best) { best = h.distance; y = h.point.y; found = true; }
+        }
+        return found;
+    }
+
     void StartPlayerPit(float lateral)
     {
         var rb = player.GetComponent<Rigidbody>();
@@ -668,7 +754,7 @@ public class RaceManager : MonoBehaviour
         var box = pitBoxes != null && playerRacer.team < pitBoxes.Length ? pitBoxes[playerRacer.team] : null;
         float toBox = Mathf.Repeat(BoxDistance(playerRacer.team) - pitS, L);
         if (toBox > L / 2f) toBox = 0f;
-        float targetLat = pitLaneOffset, latRate = 3.5f;
+        float targetLat = PitLat(pitS), latRate = pitProfile != null && pitProfile.Length > 1 ? 7f : 3.5f;
 
         switch (pitPhase)
         {
@@ -714,8 +800,9 @@ public class RaceManager : MonoBehaviour
                 break;
             case PitPhase.Exit:
             {
-                targetLat = 2.4f;
+                targetLat = 2.4f * PitSide;
                 latRate = 3f;
+                if (InWindow(pitS, pitExitStart, pitExitEnd, L)) targetLat = Mathf.Lerp(PitLat(pitS), targetLat, 0.5f);
                 bool limited = InWindow(pitS, pitExitStart, pitExitEnd, L);
                 pitV = Mathf.MoveTowards(pitV, limited ? pitSpeed : 34f, 9f * dt);
                 if (!limited && Mathf.Abs(pitLat - targetLat) < 0.2f)
@@ -738,7 +825,10 @@ public class RaceManager : MonoBehaviour
         float latVel = (pitLat - before) / dt;
         pitS += pitV * dt;
         bool jacked = pitPhase == PitPhase.Service && pitTimer > 0.2f && pitTimer < serviceTime - 0.3f;
-        Vector3 pos = track.PointAt(pitS) + track.RightAt(pitS) * pitLat + Vector3.up * (0.04f + (jacked ? 0.06f : 0f));
+        Vector3 pos = track.PointAt(pitS) + track.RightAt(pitS) * pitLat;
+        if (snapToGround && GroundAt(pos, out float gy)) pos.y = Mathf.Lerp(body0Y < -1e5f ? gy : body0Y, gy, 0.4f);
+        body0Y = pos.y;
+        pos += Vector3.up * (0.04f + (jacked ? 0.06f : 0f));
         Vector3 heading = track.TangentAt(pitS) * Mathf.Max(pitV, 1f) + track.RightAt(pitS) * latVel;
         var body = player.GetComponent<Rigidbody>();
         body.MovePosition(pos);
@@ -753,6 +843,8 @@ public class RaceManager : MonoBehaviour
         lastLap = raceTime - lapStartTime;
         bool best = bestLap < 0 || lastLap < bestLap;
         if (best) bestLap = lastLap;
+        if (useSession && GameSession.SubmitLap(GameSession.CurrentTrack.id, lastLap))
+            Radio("New lap record at " + GameSession.CurrentTrack.name + ": " + FormatTime(lastLap) + "!", true);
         lapStartTime = raceTime;
         if (lapsTimed >= laps || winner != null) Finish(playerRacer);
         else
@@ -900,8 +992,14 @@ public class RaceManager : MonoBehaviour
         var standings = Standings();
 
         DrawTopPanel(s, standings);
-        DrawMinimap(s, standings);
+        if (!useSession || GameSession.Settings.showMinimap) DrawMinimap(s, standings);
         DrawTower(s, standings);
+        DrawDrs(s);
+        if (useSession && GameSession.Settings.showFps)
+        {
+            fpsSmooth = Mathf.Lerp(fpsSmooth, 1f / Mathf.Max(Time.unscaledDeltaTime, 0.001f), 0.05f);
+            GUI.Label(new Rect(Screen.width - 120 * s, Screen.height - 52 * s, 110 * s, 26 * s), Mathf.RoundToInt(fpsSmooth) + " FPS", small);
+        }
 
         if (state == State.Countdown) DrawStartLights(s);
         if (goBannerTimer > 0) Banner(s, "GO!", new Color(0.3f, 1f, 0.4f));
@@ -1103,6 +1201,21 @@ public class RaceManager : MonoBehaviour
         Fill(new Rect(bar.x, bar.y, bar.width * lapFrac, bar.height), SectorColors[Mathf.Min(2, (int)(lapFrac * 3f))], 4 * s);
         for (int k = 1; k < 3; k++)
             Fill(new Rect(bar.x + bar.width * k / 3f - 1 * s, bar.y - 2 * s, 2 * s, bar.height + 4 * s), new Color(1f, 1f, 1f, 0.5f));
+    }
+
+    float fpsSmooth = 60f;
+
+    // DRS light: grey = closed / not allowed, green outline = zone (press F), solid green = open
+    void DrawDrs(float s)
+    {
+        if (drsZones == null || drsZones.Length == 0 || !(player is F1Car c)) return;
+        Rect r = new Rect(590 * s, Screen.height - 76 * s, 92 * s, 52 * s);
+        Color green = new Color(0.15f, 0.85f, 0.35f);
+        Fill(r, c.DrsOpen ? green : new Color(0.05f, 0.06f, 0.09f, 0.78f), 10 * s);
+        if (!c.DrsOpen && c.drsAvailable) { Fill(new Rect(r.x, r.yMax - 6 * s, r.width, 6 * s), green, 3 * s); }
+        var st = new GUIStyle(big) { fontSize = Mathf.RoundToInt(24 * s), alignment = TextAnchor.MiddleCenter };
+        st.normal.textColor = c.DrsOpen ? Color.black : c.drsAvailable ? green : new Color(1f, 1f, 1f, 0.35f);
+        GUI.Label(r, "DRS", st);
     }
 
     // Tyre panel (compound, wear, stop requirement) and pit lane / flag messages

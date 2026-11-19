@@ -63,16 +63,18 @@ public static class MenuSceneBuilder
         disc.transform.localScale = new Vector3(7f, 0.04f, 7f);
         disc.GetComponent<MeshRenderer>().sharedMaterial = discMat;
 
-        var car = F1ModelBuilder.Build("ShowroomCar");
+        var car = CircuitBuilder.InstantiateCar("ShowroomCar");
         Object.DestroyImmediate(car.GetComponent<Collider>());
         car.transform.position = new Vector3(0, 0.08f, 0);
+        var lod = car.GetComponent<LODGroup>();
+        if (lod != null) lod.ForceLOD(0);
         car.transform.rotation = Quaternion.Euler(0, 210f, 0);
 
         var menu = new GameObject("MainMenu").AddComponent<MainMenu>();
         menu.showroomCar = car.transform;
 
         EditorSceneManager.SaveScene(scene, ScenePath);
-        MonacoBuilder.AddSceneToBuild(ScenePath, 0);
+        CircuitBuilder.AddSceneToBuild(ScenePath, 0);
         Debug.Log("Main menu scene built: " + ScenePath);
 
         if (!string.IsNullOrEmpty(previous)) EditorSceneManager.OpenScene(previous);

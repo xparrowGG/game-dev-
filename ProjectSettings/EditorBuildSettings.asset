@@ -9,17 +9,20 @@ EditorBuildSettings:
     path: Assets/Scenes/Main Menu.unity
     guid: 7292d99ce8de49144b9f882feec82cb2
   - enabled: 1
-    path: Assets/Scenes/SampleScene.unity
-    guid: 99c9720ab356a0642a771bea13969a05
+    path: Assets/Scenes/Circuit Monaco.unity
+    guid: c6acff0d98d3f6740b13d143ff244cfd
   - enabled: 1
-    path: Assets/Scenes/joy game dev 1.unity
-    guid: 7254e4ec926bc9342a036ff69a1ada0d
+    path: Assets/Scenes/Circuit Baku.unity
+    guid: 7833c17bc296125428fd808d25873ca9
   - enabled: 1
-    path: Assets/Scenes/joy game dev f1.unity
-    guid: ee8917e20e707464194f1e87ab964d59
+    path: Assets/Scenes/Circuit Monza.unity
+    guid: 991f1fd23384a0a41a291cc50fdd2c09
   - enabled: 1
-    path: Assets/Scenes/Monaco GP.unity
-    guid: c497a485de45ef14a9457c37f06db2f1
+    path: Assets/Scenes/Circuit Spa.unity
+    guid: f649d7e9329ba414789ce512b05d0f3a
+  - enabled: 1
+    path: Assets/Scenes/Circuit Suzuka.unity
+    guid: d2a1bcf390801a4479d64f507679b0da
   m_configObjects:
     com.unity.dt.app-ui: {fileID: 11400000, guid: 1b1c20d82303e4b5781c3ef50ac1449f, type: 2}
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}

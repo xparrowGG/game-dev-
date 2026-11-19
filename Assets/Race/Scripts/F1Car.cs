@@ -85,6 +85,11 @@ public class F1Car : VehicleBase
     public override float ErsCharge => ersEnergy / ersCapacity;
     [System.NonSerialized] public float tyreGripScale = 1f;   // compound and wear, set by the race manager
     public bool OnGravel { get; private set; }
+    public bool OnGrass { get; private set; }
+    // DRS: the race manager says when the car is in an activation zone; the driver opens the flap (F / Y)
+    [System.NonSerialized] public bool drsAvailable, drsAuto;
+    public bool DrsOpen { get; private set; }
+    bool drsPressed;
     public float ThrottleInput { get; private set; }
     public float TyreSlip { get; private set; }      // 0 = gripping, 1+ = sliding hard (for the tyre squeal)
     public float LateralG { get; private set; }
@@ -188,6 +193,7 @@ public class F1Car : VehicleBase
             shiftUpPressed |= k.eKey.wasPressedThisFrame;
             shiftDownPressed |= k.qKey.wasPressedThisFrame;
             resetPressed |= k.rKey.wasPressedThisFrame;
+            drsPressed |= k.fKey.wasPressedThisFrame;
         }
         var g = Gamepad.current;
         if (g != null)
@@ -199,6 +205,7 @@ public class F1Car : VehicleBase
             inHandbrake |= g.buttonSouth.isPressed;
             shiftUpPressed |= g.rightShoulder.wasPressedThisFrame;
             shiftDownPressed |= g.leftShoulder.wasPressedThisFrame;
+            drsPressed |= g.buttonNorth.wasPressedThisFrame;
         }
 #else
         throttleKey = Mathf.Max(0, Input.GetAxisRaw("Vertical"));
@@ -209,6 +216,7 @@ public class F1Car : VehicleBase
         shiftUpPressed |= Input.GetKeyDown(KeyCode.E);
         shiftDownPressed |= Input.GetKeyDown(KeyCode.Q);
         resetPressed |= Input.GetKeyDown(KeyCode.R);
+        drsPressed |= Input.GetKeyDown(KeyCode.F);
 #endif
         float dt = Time.deltaTime;
         // Digital keys are eased in like a driver squeezing the pedal; analog input is used directly
@@ -282,13 +290,18 @@ public class F1Car : VehicleBase
         if (Mathf.Abs(targetSteer) < Mathf.Abs(steerAngle)) rate *= 1.8f;
         steerAngle = Mathf.MoveTowards(steerAngle, targetSteer, rate * dt);
 
-        // Aerodynamics
+        // DRS: opens only in a zone, shuts the moment the driver touches the brakes
+        if (!drsAvailable || brake > 0.1f || !inputEnabled || externalInput) DrsOpen = false;
+        else if (drsPressed || drsAuto) DrsOpen = true;
+        drsPressed = false;
+
+        // Aerodynamics (open DRS flap: less drag, less rear downforce)
         float q = 0.5f * airDensity * vLong * vLong;
-        float downforce = q * downforceArea * (FrontWingLost ? 0.8f : 1f);
+        float downforce = q * downforceArea * (FrontWingLost ? 0.8f : 1f) * (DrsOpen ? 0.86f : 1f);
         float frontShare = FrontWingLost ? aeroBalanceFront * 0.55f : aeroBalanceFront;
         rb.AddForceAtPosition(-transform.up * downforce * frontShare, transform.TransformPoint(0, 0.3f, frontAxleZ));
         rb.AddForceAtPosition(-transform.up * downforce * (1f - frontShare), transform.TransformPoint(0, 0.3f, rearAxleZ));
-        if (vel.sqrMagnitude > 0.01f) rb.AddForce(-vel.normalized * 0.5f * airDensity * vel.sqrMagnitude * dragArea);
+        if (vel.sqrMagnitude > 0.01f) rb.AddForce(-vel.normalized * 0.5f * airDensity * vel.sqrMagnitude * dragArea * (DrsOpen ? 0.8f : 1f));
 
         // Gearbox
         shiftTimer -= dt;
@@ -346,6 +359,7 @@ public class F1Car : VehicleBase
         WheelLocking = false;
         WheelSpinning = false;
         OnGravel = false;
+        OnGrass = false;
         ThrottleInput = driveInput;
         float slipMax = 0f;
         float cornerMass = mass * 0.25f;
@@ -365,6 +379,8 @@ public class F1Car : VehicleBase
             var surface = w.hit.collider.sharedMaterial;
             bool gravel = surface != null && surface.name.StartsWith("Gravel");
             if (gravel) { mu *= 0.45f; OnGravel = true; }
+            else if (surface != null && surface.name.StartsWith("Grass")) { mu *= 0.55f; OnGrass = true; }
+            else if (surface != null && surface.name.StartsWith("Kerb")) mu *= 0.93f;
             float maxF = mu * w.load;
 
             // Lateral: slip angle through a Pacejka-style curve (speed floor keeps it stable at a crawl)
@@ -381,7 +397,7 @@ public class F1Car : VehicleBase
                 float hold = -vx * cornerMass / dt;          // force that would stop the wheel this step
                 fx += Mathf.Clamp(hold, -wheelBrake, wheelBrake);
             }
-            fx -= vx * (gravel ? 380f : 12f);                 // rolling resistance (gravel digs in)
+            fx -= vx * (gravel ? 380f : OnGrass ? 70f : 12f);                 // rolling resistance (gravel digs in)
 
             // Friction circle: assists keep the tyre at the limit, without them it locks or spins and loses side grip
             float latUse = Mathf.Abs(fy) / Mathf.Max(maxF, 1f);

@@ -156,20 +156,20 @@ public class RaceAI : MonoBehaviour
                     desired = Mathf.Min(desired, FollowLimit(false));
                     if (RaceManager.InWindow(d, m.pitEntryStart, m.pitEntryEnd + 20f, track.length))
                     {
-                        laneTarget = m.pitLaneOffset;
+                        laneTarget = m.PitLat(d);
                         laneSpeed = 6f;
                         desired = Mathf.Min(desired, m.pitSpeed);
                     }
-                    laneLimit = m.pitLaneOffset + 0.5f;
-                    if (lane > m.pitLaneOffset - 2f) Pit = PitState.InLane;
+                    laneLimit = m.PitLimit;
+                    if (lane * m.PitSide > Mathf.Abs(m.PitLat(d)) - 2f) Pit = PitState.InLane;
                     break;
                 }
 
                 case PitState.InLane:
                 {
-                    laneTarget = m.pitLaneOffset;
+                    laneTarget = m.PitLat(d);
                     laneSpeed = 6f;
-                    laneLimit = m.pitLaneOffset + 0.5f;
+                    laneLimit = m.PitLimit;
                     float toBox = Mathf.Repeat(m.BoxDistance(team) - d, track.length);
                     if (toBox > track.length / 2f) toBox = 0f;
                     desired = Mathf.Min(m.pitSpeed, Mathf.Sqrt(2f * 10f * Mathf.Max(0f, toBox - 0.2f)));
@@ -187,7 +187,7 @@ public class RaceAI : MonoBehaviour
 
                 case PitState.Stopped:
                     desired = 0f;
-                    laneLimit = m.pitLaneOffset + 0.5f;
+                    laneLimit = m.PitLimit;
                     stopElapsed += dt;
                     TyresOff = stopElapsed > 0.35f && stopElapsed < stopTime - 0.5f;
                     if (stopElapsed > 0.8f && compound != nextCompound) { compound = nextCompound; tyreWear = 0f; TyresChanged = true; }
@@ -201,15 +201,15 @@ public class RaceAI : MonoBehaviour
 
                 case PitState.Leaving:
                 {
-                    laneLimit = m.pitLaneOffset + 0.5f;
+                    laneLimit = m.PitLimit;
                     desired = Mathf.Min(m.pitSpeed, FollowLimit(true));
                     if (RaceManager.InWindow(d, m.pitExitStart, m.pitExitEnd + 40f, track.length))
                     {
-                        laneTarget = narrow ? 2.6f : 4.5f;
+                        laneTarget = (narrow ? 2.6f : 4.5f) * m.PitSide;
                         laneSpeed = 5f;
                         if (!RaceManager.InWindow(d, m.pitExitStart, m.pitExitEnd, track.length)) desired = RacingSpeed(skill, track);
                     }
-                    if (lane < (narrow ? 3.2f : 5f) && !RaceManager.InWindow(d, m.pitEntryStart, m.pitExitStart, track.length)) Pit = PitState.None;
+                    if (lane * m.PitSide < (narrow ? 3.2f : 5f) && !RaceManager.InWindow(d, m.pitEntryStart, m.pitExitStart, track.length)) Pit = PitState.None;
                     break;
                 }
             }
@@ -235,13 +235,43 @@ public class RaceAI : MonoBehaviour
         Place();
     }
 
+    float groundY; Vector3 groundN = Vector3.up; bool groundInit;
+    static readonly RaycastHit[] groundHits = new RaycastHit[8];
+
+    bool SampleGround(Vector3 p, out float y, out Vector3 normal)
+    {
+        y = p.y; normal = Vector3.up;
+        if (manager == null || !manager.snapToGround) return false;
+        int n = Physics.RaycastNonAlloc(p + Vector3.up * 2.5f, Vector3.down, groundHits, 6f, ~0, QueryTriggerInteraction.Ignore);
+        float best = float.MaxValue;
+        bool found = false;
+        for (int i = 0; i < n; i++)
+        {
+            var h = groundHits[i];
+            if (h.collider.attachedRigidbody != null || h.normal.y < 0.7f) continue;
+            if (h.distance < best) { best = h.distance; y = h.point.y; normal = h.normal; found = true; }
+        }
+        return found;
+    }
+
     void Place()
     {
         var track = manager.track;
         Vector3 pos = track.PointAt(progress) + track.RightAt(progress) * lane;
+        Vector3 up = Vector3.up;
+        // Real circuits are cambered and banked: sit the car on the actual surface under it
+        if (SampleGround(pos, out float gy, out Vector3 n))
+        {
+            groundY = groundInit ? Mathf.Lerp(groundY, gy, 0.5f) : gy;
+            groundN = groundInit ? Vector3.Slerp(groundN, n, 0.3f) : n;
+            groundInit = true;
+            pos.y = groundY;
+            up = groundN;
+        }
         pos.y += 0.03f;
         if (rb == null) rb = GetComponent<Rigidbody>();
-        Quaternion rot = Quaternion.LookRotation(track.TangentAt(progress), Vector3.up) * Quaternion.Euler(0, wobble, 0);
+        Vector3 fwd = Vector3.ProjectOnPlane(track.TangentAt(progress), up).normalized;
+        Quaternion rot = Quaternion.LookRotation(fwd, up) * Quaternion.Euler(0, wobble, 0);
         if (Application.isPlaying) { rb.MovePosition(pos); rb.MoveRotation(rot); }
         else transform.SetPositionAndRotation(pos, rot);
     }
@@ -256,7 +286,7 @@ public class RaceAI : MonoBehaviour
             if (r.ai == this || r.retired) continue;
             if (r.ai != null && !r.ai.gameObject.activeSelf) continue;
             float dp = r.progress - progress;
-            bool sameLane = pitLane ? r.lateral > manager.pitLaneOffset - 2.5f : Mathf.Abs(r.lateral - lane) < 2.3f;
+            bool sameLane = pitLane ? r.lateral * manager.PitSide > Mathf.Abs(manager.PitLat(Mathf.Repeat(progress, manager.track.length))) - 2.5f : Mathf.Abs(r.lateral - lane) < 2.3f;
             if (dp > 0f && dp < 18f && sameLane && dp < gapBest) { gapBest = dp; ahead = r; }
         }
         if (ahead == null) return float.MaxValue;

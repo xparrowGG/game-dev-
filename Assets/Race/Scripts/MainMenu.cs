@@ -10,7 +10,7 @@ public class MainMenu : MonoBehaviour
     public Transform showroomCar;
     public float spinSpeed = 14f;
 
-    enum Page { Main, QuickRace, CareerNew, CareerHub, Settings, Controls }
+    enum Page { Main, QuickRace, TimeTrial, CareerNew, CareerHub, Garage, Records, Settings, Controls, Credits }
     Page page = Page.Main;
     int hubTab;
     bool confirmDelete;
@@ -33,6 +33,9 @@ public class MainMenu : MonoBehaviour
         AudioListener.pause = false;
         GameSession.ApplySettings();
         quick = GameSession.Race;
+        quick.team = Mathf.Clamp(quick.team, 0, GameSession.Teams.Length - 1);
+        quick.track = Mathf.Clamp(quick.track, 0, GameSession.Tracks.Length - 1);
+        quick.opponents = Mathf.Clamp(quick.opponents, 1, GameSession.Teams.Length * 2 - 1);
         if (GameSession.OpenCareerHub && GameSession.HasCareer) page = Page.CareerHub;
         GameSession.OpenCareerHub = false;
         tex = Texture2D.whiteTexture;
@@ -42,11 +45,12 @@ public class MainMenu : MonoBehaviour
     {
         if (showroomCar != null) showroomCar.Rotate(0f, spinSpeed * Time.deltaTime, 0f, Space.World);
         int team = page == Page.CareerHub && GameSession.HasCareer ? GameSession.Career.team : page == Page.CareerNew ? newTeam : quick.team;
+        team = Mathf.Clamp(team, 0, GameSession.Teams.Length - 1);
         if (team != shownTeam && showroomCar != null)
         {
             shownTeam = team;
             var t = GameSession.Teams[team];
-            RaceManager.ApplyLivery(showroomCar.gameObject, t.primary, t.secondary, new Color(1f, 0.85f, 0.1f));
+            RaceManager.ApplyLivery(showroomCar.gameObject, t.primary, t.secondary, new Color(1f, 0.85f, 0.1f), t.livery);
         }
     }
 
@@ -159,20 +163,24 @@ public class MainMenu : MonoBehaviour
         Fill(new Rect(56 * s, 58 * s, 10 * s, 96 * s), new Color(Accent.r, Accent.g, Accent.b, pulse));
         Fill(new Rect(70 * s, 58 * s, 4 * s, 96 * s), new Color(1, 1, 1, 0.8f));
         GUI.Label(new Rect(90 * s, 50 * s, 900 * s, 80 * s), GameSession.GameTitle, title);
-        GUI.Label(new Rect(94 * s, 124 * s, 900 * s, 30 * s), "MONACO  ·  " + GameSession.Teams.Length + " TEAMS  ·  " + GameSession.Teams.Length * 2 + " DRIVERS", subtitle);
+        GUI.Label(new Rect(94 * s, 124 * s, 900 * s, 30 * s), GameSession.Tracks.Length + " CIRCUITS  ·  " + GameSession.Teams.Length + " TEAMS  ·  " + GameSession.Teams.Length * 2 + " DRIVERS  ·  2026 CARS", subtitle);
 
         float x = 84 * s, w = 600 * s, top = 190 * s;
         Rect area = new Rect(x, top, w + 24 * s, Screen.height - top - 60 * s);
         switch (page)
         {
             case Page.Main: DrawMain(x, top, w, s); break;
-            case Page.QuickRace: Scrolled(area, s, 1500f, (yy) => DrawQuickRace(0, yy, w, s)); break;
+            case Page.QuickRace: Scrolled(area, s, 2000f, (yy) => DrawQuickRace(0, yy, w, s)); break;
+            case Page.TimeTrial: Scrolled(area, s, 1500f, (yy) => DrawTimeTrial(0, yy, w, s)); break;
+            case Page.Garage: Scrolled(area, s, 1100f, (yy) => DrawGarage(0, yy, w, s)); break;
+            case Page.Records: DrawRecords(x, top, w, s); break;
+            case Page.Credits: Scrolled(area, s, 1100f, (yy) => DrawCredits(0, yy, w, s)); break;
             case Page.CareerNew: Scrolled(area, s, 1250f, (yy) => DrawCareerNew(0, yy, w, s)); break;
             case Page.CareerHub: DrawCareerHub(x, top, w, s); break;
-            case Page.Settings: Scrolled(area, s, 1050f, (yy) => DrawSettings(0, yy, w, s)); break;
+            case Page.Settings: Scrolled(area, s, 1500f, (yy) => DrawSettings(0, yy, w, s)); break;
             case Page.Controls: DrawControls(x, top, w, s); break;
         }
-        GUI.Label(new Rect(84 * s, Screen.height - 46 * s, 900 * s, 30 * s), "Team colours only — no sponsor logos. Mouse to navigate.", small);
+        GUI.Label(new Rect(84 * s, Screen.height - 46 * s, 900 * s, 30 * s), "Team names for identification only, not affiliated with Formula 1 or any team.  " + MapCredit.Text, small);
     }
 
     void Scrolled(Rect area, float s, float contentHeight, System.Action<float> draw)
@@ -184,21 +192,30 @@ public class MainMenu : MonoBehaviour
 
     void DrawMain(float x, float y, float w, float s)
     {
-        float h = 104 * s, gap = 16 * s;
+        float h = 78 * s, gap = 10 * s;
         bool has = GameSession.HasCareer;
-        if (Card(new Rect(x, y, w, h), "CAREER", has ? "Continue your season: " + GameSession.Teams[GameSession.Career.team].name + ", round " + GameSession.Career.round
-                                                       : "Pick your team, race the full season, earn upgrades and fight for the title.", Accent))
+        if (Card(new Rect(x, y, w, h), "CAREER", has ? "Continue: " + GameSession.Teams[GameSession.Career.team].name + ", round " + GameSession.Career.round + " - " + GameSession.Tracks[GameSession.CareerTrackIndex].grandPrix
+                                                       : "Pick your team, race the 5-round world tour, earn upgrades, win the title.", Accent))
             page = has ? Page.CareerHub : Page.CareerNew;
         y += h + gap;
-        if (Card(new Rect(x, y, w, h), "QUICK RACE", "Choose a team, laps and difficulty, then go racing at Monaco.", new Color(0.2f, 0.6f, 1f)))
+        if (Card(new Rect(x, y, w, h), "QUICK RACE", "Any circuit, any team, 22-car grid. Laps, difficulty and tyres your way.", new Color(0.2f, 0.6f, 1f)))
         { page = Page.QuickRace; scroll = Vector2.zero; }
         y += h + gap;
-        if (Card(new Rect(x, y, w, h), "SETTINGS", "Graphics, sound, units, camera and driving assists.", new Color(0.3f, 0.85f, 0.45f)))
+        if (Card(new Rect(x, y, w, h), "TIME TRIAL", "Empty track, just you and the clock. Set lap records on every circuit.", new Color(0.7f, 0.35f, 1f)))
+        { page = Page.TimeTrial; scroll = Vector2.zero; }
+        y += h + gap;
+        if (Card(new Rect(x, y, w, h), "GARAGE", "Look over the eleven 2026 cars and liveries, drivers and car pace.", new Color(0.1f, 0.8f, 0.8f)))
+        { page = Page.Garage; scroll = Vector2.zero; }
+        y += h + gap;
+        if (Card(new Rect(x, y, w, h), "RECORDS", "Your best lap at each circuit.", new Color(1f, 0.45f, 0.2f))) page = Page.Records;
+        y += h + gap;
+        if (Card(new Rect(x, y, w, h), "SETTINGS", "Graphics, performance, sound, camera, HUD and driving assists.", new Color(0.3f, 0.85f, 0.45f)))
         { page = Page.Settings; scroll = Vector2.zero; }
         y += h + gap;
         if (Card(new Rect(x, y, w, h), "CONTROLS", "Keyboard and gamepad buttons.", new Color(1f, 0.75f, 0.2f))) page = Page.Controls;
         y += h + gap;
-        if (Chip(new Rect(x, y, 160 * s, 44 * s), "QUIT", false))
+        if (Chip(new Rect(x, y, 160 * s, 44 * s), "CREDITS", false)) { page = Page.Credits; scroll = Vector2.zero; }
+        if (Chip(new Rect(x + 172 * s, y, 160 * s, 44 * s), "QUIT", false))
         {
 #if UNITY_EDITOR
             UnityEditor.EditorApplication.isPlaying = false;
@@ -208,7 +225,52 @@ public class MainMenu : MonoBehaviour
         }
     }
 
-    // 2 x 5 grid of team cards: colours, name, drivers, pace bar
+    // ---------- Circuits ----------
+
+    readonly Dictionary<string, Texture2D> images = new Dictionary<string, Texture2D>();
+    Texture2D Image(string path)
+    {
+        if (!images.TryGetValue(path, out var t)) { t = Resources.Load<Texture2D>(path); images[path] = t; }
+        return t;
+    }
+
+    static string FormatLap(float t) => t <= 0f ? "--:--.---" : Mathf.FloorToInt(t / 60f) + ":" + (t % 60f).ToString("00.000");
+
+    // Circuit chips + a preview card (render, length, corners, your record)
+    void TrackPicker(ref float y, float x, float w, float s, ref int track)
+    {
+        int n = GameSession.Tracks.Length;
+        float cw = (w - (n - 1) * 6 * s) / n;
+        for (int i = 0; i < n; i++)
+            if (Chip(new Rect(x + i * (cw + 6 * s), y, cw, 36 * s), GameSession.Tracks[i].id.ToUpperInvariant(), track == i)) track = i;
+        y += 44 * s;
+        var info = GameSession.Tracks[track];
+        Rect card = new Rect(x, y, w, 230 * s);
+        Fill(card, new Color(1, 1, 1, 0.05f), 10 * s);
+        var img = Image(info.preview);
+        if (img != null) GUI.DrawTexture(new Rect(card.x + 8 * s, card.y + 8 * s, 330 * s, 214 * s), img, ScaleMode.ScaleAndCrop, false, 0, Color.white, 0, 8 * s);
+        float tx = card.x + 352 * s, tw = card.width - 360 * s;
+        GUI.Label(new Rect(tx, card.y + 12 * s, tw, 30 * s), info.grandPrix.ToUpperInvariant(), new GUIStyle(value) { alignment = TextAnchor.MiddleLeft, wordWrap = true });
+        GUI.Label(new Rect(tx, card.y + 46 * s, tw, 44 * s), info.name, new GUIStyle(small) { wordWrap = true });
+        GUI.Label(new Rect(tx, card.y + 96 * s, tw, 24 * s), info.country, label);
+        GUI.Label(new Rect(tx, card.y + 124 * s, tw, 24 * s), info.lengthKm.ToString("0.000") + " km  ·  " + info.corners + " turns", label);
+        GUI.Label(new Rect(tx, card.y + 160 * s, tw, 24 * s), "YOUR RECORD", subtitle);
+        GUI.Label(new Rect(tx, card.y + 186 * s, tw, 30 * s), FormatLap(GameSession.BestLap(info.id)), new GUIStyle(value) { alignment = TextAnchor.MiddleLeft, fontSize = Mathf.RoundToInt(22 * s) });
+        y += 244 * s;
+    }
+
+    void Launch(RaceSetup setup, bool career)
+    {
+        GameSession.Race = setup;
+        GameSession.CareerMode = career;
+        GameSession.StartedFromMenu = true;
+        GameSession.SaveSettings();
+        string scene = GameSession.RaceScene;
+        if (!Application.CanStreamedLevelBeLoaded(scene)) { missingScene = scene; return; }
+        SceneManager.LoadScene(scene);
+    }
+    string missingScene;
+    // 2-column grid of team cards: colours, name, drivers, pace bar
     void TeamGrid(ref float y, float x, float w, float s, ref int team)
     {
         float cw = (w - 12 * s) / 2f, ch = 70 * s;
@@ -228,7 +290,7 @@ public class MainMenu : MonoBehaviour
             Fill(new Rect(r.x + 42 * s, r.y + 55 * s, (cw - 60 * s) * pace, 5 * s), Color.Lerp(new Color(1f, 0.6f, 0.2f), new Color(0.3f, 1f, 0.5f), pace), 2 * s);
             if (GUI.Button(r, GUIContent.none, GUIStyle.none)) team = i;
         }
-        y += 5 * (ch + 10 * s) + 6 * s;
+        y += Mathf.CeilToInt(GameSession.Teams.Length / 2f) * (ch + 10 * s) + 6 * s;
         GUI.Label(new Rect(x, y, w, 22 * s), "You take the second seat: you'll race alongside " + GameSession.Teams[team].drivers[0] + ".  Bar = car pace.", small);
         y += 32 * s;
     }
@@ -276,16 +338,18 @@ public class MainMenu : MonoBehaviour
         Back(y, x, s);
         GUI.Label(new Rect(x + 160 * s, y, w, 44 * s), "QUICK RACE", header);
         y += 64 * s;
-        Section(ref y, x, w, s, "1. Your team");
+        Section(ref y, x, w, s, "1. Circuit");
+        TrackPicker(ref y, x, w, s, ref quick.track);
+        Section(ref y, x, w, s, "2. Your team");
         TeamGrid(ref y, x, w, s, ref quick.team);
         GUI.Label(new Rect(x, y, w * 0.35f, 34 * s), "Driver name", label);
         quick.driverName = GUI.TextField(new Rect(x + w * 0.35f, y, w * 0.65f, 34 * s), quick.driverName, 20, field);
         y += 50 * s;
 
-        Section(ref y, x, w, s, "2. AI level");
+        Section(ref y, x, w, s, "3. AI level");
         DifficultyPicker(ref y, x, w, s, ref quick.difficulty);
 
-        Section(ref y, x, w, s, "3. Race");
+        Section(ref y, x, w, s, "4. Race");
         int[] lapOptions = { 3, 5, 10, 15, 20 };
         GUI.Label(new Rect(x, y, w * 0.35f, 34 * s), "Laps", label);
         float lw = (w * 0.65f - 24 * s) / lapOptions.Length;
@@ -293,15 +357,16 @@ public class MainMenu : MonoBehaviour
             if (Chip(new Rect(x + w * 0.35f + i * (lw + 6 * s), y, lw, 34 * s), lapOptions[i].ToString(), quick.laps == lapOptions[i])) quick.laps = lapOptions[i];
         y += 40 * s;
         GUI.Label(new Rect(x, y, w * 0.35f, 34 * s), "Opponents", label);
-        quick.opponents = Mathf.RoundToInt(GUI.HorizontalSlider(new Rect(x + w * 0.35f, y + 12 * s, w * 0.52f, 20 * s), quick.opponents, 1, 19));
+        quick.opponents = Mathf.RoundToInt(GUI.HorizontalSlider(new Rect(x + w * 0.35f, y + 12 * s, w * 0.52f, 20 * s), quick.opponents, 1, GameSession.Teams.Length * 2 - 1));
         GUI.Label(new Rect(x, y, w, 34 * s), quick.opponents.ToString(), value);
         y += 40 * s;
         Choice(ref y, x, w, s, "Start from", ref quick.grid, new[] { "Pole", "Random", "Back", "Pace" });
         TyreChips(ref y, x, w, s, ref quick.startCompound);
 
-        Section(ref y, x, w, s, "4. Assists");
+        Section(ref y, x, w, s, "5. Assists");
         var st = GameSession.Settings;
         Toggle(ref y, x, w, s, "Braking markers (green / yellow / red)", ref st.brakingLine);
+        Toggle(ref y, x, w, s, "Automatic DRS", ref st.drsAssist);
         Toggle(ref y, x, w, s, "Steering & stability assist", ref st.steeringAssist);
         Toggle(ref y, x, w, s, "ABS", ref st.abs);
         Toggle(ref y, x, w, s, "Traction control", ref st.tractionControl);
@@ -311,12 +376,112 @@ public class MainMenu : MonoBehaviour
         if (GUI.Button(new Rect(x, y, w, 70 * s), "START RACE  >", bigButton))
         {
             quick.driverCode = MakeCode(quick.driverName);
-            GameSession.Race = quick;
-            GameSession.CareerMode = false;
-            GameSession.StartedFromMenu = true;
-            GameSession.SaveSettings();
-            SceneManager.LoadScene(GameSession.RaceScene);
+            quick.timeTrial = false;
+            Launch(quick, false);
         }
+        if (missingScene != null) GUI.Label(new Rect(x, y + 76 * s, w, 26 * s), "Scene \"" + missingScene + "\" is not built yet (Tools > XPARROW).", small);
+    }
+
+    void DrawTimeTrial(float x, float y, float w, float s)
+    {
+        Back(y, x, s);
+        GUI.Label(new Rect(x + 160 * s, y, w, 44 * s), "TIME TRIAL", header);
+        y += 64 * s;
+        GUI.Label(new Rect(x, y, w, 44 * s), "No rivals, no tyre rule. Every lap is timed; your best lap per circuit is saved.\nPit lane, DRS and all assists work as in a race.", small);
+        y += 56 * s;
+        Section(ref y, x, w, s, "1. Circuit");
+        TrackPicker(ref y, x, w, s, ref quick.track);
+        Section(ref y, x, w, s, "2. Car");
+        TeamGrid(ref y, x, w, s, ref quick.team);
+        Section(ref y, x, w, s, "3. Session");
+        int[] lapOptions = { 3, 5, 10, 20 };
+        GUI.Label(new Rect(x, y, w * 0.35f, 34 * s), "Laps", label);
+        float lw = (w * 0.65f - 18 * s) / lapOptions.Length;
+        for (int i = 0; i < lapOptions.Length; i++)
+            if (Chip(new Rect(x + w * 0.35f + i * (lw + 6 * s), y, lw, 34 * s), lapOptions[i].ToString(), quick.laps == lapOptions[i])) quick.laps = lapOptions[i];
+        y += 40 * s;
+        TyreChips(ref y, x, w, s, ref quick.startCompound);
+        var st = GameSession.Settings;
+        Toggle(ref y, x, w, s, "Braking markers", ref st.brakingLine);
+        Toggle(ref y, x, w, s, "Steering & stability assist", ref st.steeringAssist);
+        Toggle(ref y, x, w, s, "ABS", ref st.abs);
+        Toggle(ref y, x, w, s, "Traction control", ref st.tractionControl);
+        y += 16 * s;
+        if (GUI.Button(new Rect(x, y, w, 70 * s), "START TIME TRIAL  >", bigButton))
+        {
+            quick.driverCode = MakeCode(quick.driverName);
+            quick.timeTrial = true;
+            quick.grid = 0;
+            Launch(quick, false);
+        }
+        if (missingScene != null) GUI.Label(new Rect(x, y + 76 * s, w, 26 * s), "Scene \"" + missingScene + "\" is not built yet (Tools > XPARROW).", small);
+    }
+
+    void DrawGarage(float x, float y, float w, float s)
+    {
+        Back(y, x, s);
+        GUI.Label(new Rect(x + 160 * s, y, w, 44 * s), "GARAGE", header);
+        y += 64 * s;
+        GUI.Label(new Rect(x, y, w, 24 * s), "Pick a team to put its 2026 car on the turntable.", small);
+        y += 34 * s;
+        TeamGrid(ref y, x, w, s, ref quick.team);
+        var t = GameSession.Teams[quick.team];
+        Section(ref y, x, w, s, t.name + " 2026");
+        Stat(ref y, x, w, s, "Drivers", t.drivers[0] + "  ·  " + t.drivers[1]);
+        Stat(ref y, x, w, s, "Car pace", Mathf.RoundToInt(Mathf.InverseLerp(0.95f, 1.045f, t.performance) * 100f) + " / 100");
+        Stat(ref y, x, w, s, "Power unit", "1.6 V6 turbo hybrid, ~50% electric");
+        Stat(ref y, x, w, s, "Minimum mass", "768 kg + driver");
+        Stat(ref y, x, w, s, "Aero", "Active aero: DRS flap in the zones (F / Y)");
+        Stat(ref y, x, w, s, "Gearbox", "8-speed seamless shift");
+        var img = Image("F1UI/Team_" + t.livery.ToString("00") + "_" + LiveryFile(t.livery));
+        if (img != null) { y += 8 * s; GUI.DrawTexture(new Rect(x, y, w, w * 9f / 16f), img, ScaleMode.ScaleAndCrop, false, 0, Color.white, 0, 10 * s); }
+    }
+
+    static string LiveryFile(int i)
+    {
+        string[] n = { "Concept2026", "Ferrari", "RedBull", "McLaren", "Mercedes", "AstonMartin", "Alpine", "Williams", "RacingBulls", "Haas", "Audi", "Cadillac" };
+        return n[Mathf.Clamp(i, 0, n.Length - 1)];
+    }
+
+    void DrawRecords(float x, float y, float w, float s)
+    {
+        Back(y, x, s);
+        GUI.Label(new Rect(x + 160 * s, y, w, 44 * s), "RECORDS", header);
+        y += 70 * s;
+        foreach (var info in GameSession.Tracks)
+        {
+            Rect r = new Rect(x, y, w, 96 * s);
+            Fill(r, new Color(1, 1, 1, 0.05f), 8 * s);
+            var img = Image(info.preview);
+            if (img != null) GUI.DrawTexture(new Rect(r.x + 6 * s, r.y + 6 * s, 140 * s, 84 * s), img, ScaleMode.ScaleAndCrop, false, 0, Color.white, 0, 6 * s);
+            GUI.Label(new Rect(r.x + 160 * s, r.y + 10 * s, w - 170 * s, 30 * s), info.grandPrix.ToUpperInvariant(), new GUIStyle(value) { alignment = TextAnchor.MiddleLeft });
+            GUI.Label(new Rect(r.x + 160 * s, r.y + 42 * s, w - 170 * s, 24 * s), info.name + "  ·  " + info.lengthKm.ToString("0.000") + " km", small);
+            GUI.Label(new Rect(r.x, r.y + 30 * s, w - 20 * s, 40 * s), FormatLap(GameSession.BestLap(info.id)), new GUIStyle(value) { fontSize = Mathf.RoundToInt(26 * s) });
+            y += 106 * s;
+        }
+    }
+
+    void DrawCredits(float x, float y, float w, float s)
+    {
+        Back(y, x, s);
+        GUI.Label(new Rect(x + 160 * s, y, w, 44 * s), "CREDITS", header);
+        y += 70 * s;
+        void Line(string head, string text)
+        {
+            GUI.Label(new Rect(x, y, w, 26 * s), head.ToUpperInvariant(), subtitle);
+            var st = new GUIStyle(label) { wordWrap = true };
+            float hgt = st.CalcHeight(new GUIContent(text), w);
+            GUI.Label(new Rect(x, y + 28 * s, w, hgt), text, st);
+            y += 40 * s + hgt;
+        }
+        Line(GameSession.GameTitle, "A Formula 1 style racing game made in Unity (URP).");
+        Line("Circuits", "Monaco, Baku, Monza, Spa-Francorchamps and Suzuka from the XPARROW circuit asset pack, built in Blender.");
+        Line("Map data", "\u00a9 OpenStreetMap contributors. Available under the Open Database Licence (ODbL), openstreetmap.org/copyright.");
+        Line("Elevation", "Copernicus GLO-90 Digital Elevation Model (European Union / ESA Copernicus programme), via Open-Meteo.");
+        Line("Textures", "Track surface and terrain materials from Poly Haven (CC0), plus generated trackside textures.");
+        Line("Cars", "2026-regulation F1 car model with eleven team liveries, tyre and pit-prop pack (XPARROW asset pack).");
+        Line("Physics & AI", "Raycast suspension, slip-angle tyre model, aero downforce and drag, 8-speed gearbox, ERS, DRS, pit strategy AI.");
+        Line("Notice", "Team and driver names are used for identification only. This game is not affiliated with Formula 1, the FIA or any team.");
     }
 
     void DrawCareerNew(float x, float y, float w, float s)
@@ -324,7 +489,7 @@ public class MainMenu : MonoBehaviour
         Back(y, x, s);
         GUI.Label(new Rect(x + 160 * s, y, w, 44 * s), "NEW CAREER", header);
         y += 64 * s;
-        GUI.Label(new Rect(x, y, w, 44 * s), "Join any team for a 10-round season. Score points, spend R&D on upgrades\nand earn offers from the top teams.", small);
+        GUI.Label(new Rect(x, y, w, 44 * s), "Join any team for a 5-round world tour: Monaco, Baku, Monza, Spa, Suzuka.\nScore points, spend R&D on upgrades and earn offers from the top teams.", small);
         y += 56 * s;
         Section(ref y, x, w, s, "1. Driver");
         GUI.Label(new Rect(x, y, w * 0.35f, 34 * s), "Name", label);
@@ -381,13 +546,9 @@ public class MainMenu : MonoBehaviour
         else DrawDevelopment(x, y, w, s, c);
 
         float by = Screen.height - 150 * s;
-        if (!c.seasonOver && GUI.Button(new Rect(x, by, w, 66 * s), "RACE  ·  ROUND " + c.round + "  >", bigButton))
-        {
-            GameSession.CareerMode = true;
-            GameSession.StartedFromMenu = true;
-            GameSession.Race = GameSession.CareerRaceSetup();
-            SceneManager.LoadScene(GameSession.RaceScene);
-        }
+        if (!c.seasonOver && GUI.Button(new Rect(x, by, w, 66 * s), "RACE  ·  ROUND " + c.round + "  ·  " + GameSession.Tracks[GameSession.CareerTrackIndex].id.ToUpperInvariant() + "  >", bigButton))
+            Launch(GameSession.CareerRaceSetup(), true);
+        if (missingScene != null) GUI.Label(new Rect(x + 220 * s, by + 74 * s, w, 26 * s), "Scene not built: " + missingScene, small);
         if (!confirmDelete)
         {
             if (GUI.Button(new Rect(x, by + 74 * s, 200 * s, 26 * s), "Delete career", small)) confirmDelete = true;
@@ -409,7 +570,7 @@ public class MainMenu : MonoBehaviour
 
     void DrawOverview(float x, float y, float w, float s, CareerData c)
     {
-        Stat(ref y, x, w, s, "Next race", GameSession.TrackName);
+        Stat(ref y, x, w, s, "Next race", GameSession.Tracks[GameSession.CareerTrackIndex].grandPrix);
         Stat(ref y, x, w, s, "Race distance", GameSession.Settings.careerLaps + " laps");
         Stat(ref y, x, w, s, "AI level", GameSession.DifficultyNames[GameSession.Settings.difficulty]);
         y += 10 * s;
@@ -418,6 +579,18 @@ public class MainMenu : MonoBehaviour
         Stat(ref y, x, w, s, "Career points", c.careerPoints.ToString());
         Stat(ref y, x, w, s, "Best finish", c.bestFinish < 99 ? "P" + c.bestFinish : "—");
         Stat(ref y, x, w, s, "Championships", c.championships.ToString());
+        // Calendar strip
+        y += 6 * s;
+        float cw = (w - 4 * 6 * s) / 5f;
+        for (int i = 0; i < GameSession.Calendar.Length; i++)
+        {
+            var tr = GameSession.Tracks[GameSession.Calendar[i]];
+            Rect r = new Rect(x + i * (cw + 6 * s), y, cw, 40 * s);
+            bool done = i + 1 < c.round, next = i + 1 == c.round;
+            Fill(r, next ? Accent : done ? new Color(1, 1, 1, 0.16f) : new Color(1, 1, 1, 0.05f), 6 * s);
+            GUI.Label(r, "R" + (i + 1) + " " + tr.id.ToUpperInvariant(), new GUIStyle(small) { alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold });
+        }
+        y += 48 * s;
         if (c.lastResult.Count > 0)
         {
             int myPos = c.lastResult.IndexOf(c.driverName) + 1;
@@ -501,6 +674,11 @@ public class MainMenu : MonoBehaviour
         y += 40 * s;
         Toggle(ref y, x, w, s, "Fullscreen", ref st.fullscreen);
         Toggle(ref y, x, w, s, "V-Sync", ref st.vsync);
+        GUI.Label(new Rect(x, y, w * 0.45f, 34 * s), "Render scale (lower = faster)", label);
+        st.renderScale = Mathf.Round(GUI.HorizontalSlider(new Rect(x + w * 0.45f, y + 12 * s, w * 0.42f, 20 * s), st.renderScale, 0.5f, 1f) * 20f) / 20f;
+        GUI.Label(new Rect(x, y, w, 34 * s), Mathf.RoundToInt(st.renderScale * 100) + "%", value);
+        y += 40 * s;
+        Toggle(ref y, x, w, s, "Show FPS", ref st.showFps);
         Section(ref y, x, w, s, "Sound");
         FloatSlider(ref y, x, w, s, "Master volume", ref st.masterVolume);
         FloatSlider(ref y, x, w, s, "Engine volume", ref st.engineVolume);
@@ -509,6 +687,12 @@ public class MainMenu : MonoBehaviour
         Choice(ref y, x, w, s, "Speed", ref UnitIndex(st), new[] { "km/h", "mph" });
         Choice(ref y, x, w, s, "Camera", ref st.defaultCamera, new[] { "TV pod", "Chase", "Cockpit" });
         Toggle(ref y, x, w, s, "Driver name tags", ref st.nameTags);
+        Toggle(ref y, x, w, s, "Minimap", ref st.showMinimap);
+        Toggle(ref y, x, w, s, "Camera shake on impacts", ref st.cameraShake);
+        GUI.Label(new Rect(x, y, w * 0.45f, 34 * s), "Field of view", label);
+        st.fieldOfView = Mathf.Round(GUI.HorizontalSlider(new Rect(x + w * 0.45f, y + 12 * s, w * 0.42f, 20 * s), st.fieldOfView, 45f, 85f));
+        GUI.Label(new Rect(x, y, w, 34 * s), Mathf.RoundToInt(st.fieldOfView) + "°", value);
+        y += 40 * s;
         Section(ref y, x, w, s, "Career");
         Choice(ref y, x, w, s, "AI level", ref st.difficulty, GameSession.DifficultyNames);
         Choice(ref y, x, w, s, "Race laps", ref LapsIndex(st), new[] { "3", "5", "10", "15", "20" });
@@ -518,6 +702,7 @@ public class MainMenu : MonoBehaviour
         Toggle(ref y, x, w, s, "ABS", ref st.abs);
         Toggle(ref y, x, w, s, "Traction control", ref st.tractionControl);
         Toggle(ref y, x, w, s, "Automatic gears", ref st.autoGearbox);
+        Toggle(ref y, x, w, s, "Automatic DRS", ref st.drsAssist);
         st.useMph = unitIndex == 1;
         st.careerLaps = new[] { 3, 5, 10, 15, 20 }[lapsIndex];
         y += 10 * s;
@@ -546,7 +731,7 @@ public class MainMenu : MonoBehaviour
         {
             { "Throttle", "W / Up", "Right trigger" }, { "Brake (hold when stopped: reverse)", "S / Down", "Left trigger" },
             { "Steer", "A D / Left Right", "Left stick" }, { "Gear up / down (manual)", "E / Q", "RB / LB" },
-            { "ERS boost", "Left Shift", "X" }, { "Camera: TV pod / chase / cockpit", "C", "-" },
+            { "ERS boost", "Left Shift", "X" }, { "DRS (in a DRS zone)", "F", "Y" }, { "Camera: TV pod / chase / cockpit", "C", "-" },
             { "Request pit stop", "B", "-" }, { "Pit tyres: Soft / Medium / Hard", "1 / 2 / 3", "-" },
             { "Back on track", "R", "-" }, { "Pause", "Esc / P", "Start" }, { "Show help", "H", "-" }, { "Results after the flag", "Tab", "-" }
         };

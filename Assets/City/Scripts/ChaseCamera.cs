@@ -21,6 +21,8 @@ public class ChaseCamera : MonoBehaviour
     public Vector3 cockpitOffset = new Vector3(0, 1.22f, 0.25f);   // local to the car
     public Vector3 tvPodOffset = new Vector3(0, 1.28f, -0.55f);    // local to the car
     public float tvPodPitch = 6f;                                    // degrees looking down
+    public float baseFov = 62f;                                      // settings: field of view at low speed
+    public bool shake = true;
 
     Camera cam;
     VehicleBase car;
@@ -50,23 +52,23 @@ public class ChaseCamera : MonoBehaviour
             case View.TVPod:
                 transform.position = target.TransformPoint(tvPodOffset);
                 transform.rotation = target.rotation * Quaternion.Euler(tvPodPitch, 0, 0);
-                if (cam != null) cam.fieldOfView = Mathf.Lerp(68f, 80f, kmh / 250f);
+                if (cam != null) cam.fieldOfView = Mathf.Lerp(baseFov + 6f, baseFov + 18f, kmh / 250f);
                 break;
             case View.Cockpit:
                 transform.position = target.TransformPoint(cockpitOffset);
                 transform.rotation = Quaternion.LookRotation(fwd);
-                if (cam != null) cam.fieldOfView = Mathf.Lerp(65f, 78f, kmh / 250f);
+                if (cam != null) cam.fieldOfView = Mathf.Lerp(baseFov + 3f, baseFov + 16f, kmh / 250f);
                 break;
             default:
                 Vector3 desired = target.position - fwd * distance + Vector3.up * height;
                 transform.position = Vector3.Lerp(transform.position, desired, 1f - Mathf.Exp(-followSharpness * Time.deltaTime));
                 transform.rotation = Quaternion.LookRotation(target.position + Vector3.up * 1.2f + fwd * lookAhead - transform.position);
-                if (cam != null) cam.fieldOfView = Mathf.Lerp(60f, 78f, kmh / 220f);
+                if (cam != null) cam.fieldOfView = Mathf.Lerp(baseFov - 2f, baseFov + 16f, kmh / 220f);
                 break;
         }
 
         // Impact shake, fading out over about half a second
-        if (car != null && car.LastImpactTime > 0f)
+        if (shake && car != null && car.LastImpactTime > 0f)
         {
             float age = Time.time - car.LastImpactTime;
             float amp = Mathf.Clamp01(car.LastImpactStrength / 20f) * 0.22f * Mathf.Exp(-age * 6f);
