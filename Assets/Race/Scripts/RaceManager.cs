@@ -138,6 +138,7 @@ public class RaceManager : MonoBehaviour
         tex = Texture2D.whiteTexture;
         goDelay = 5f + Random.Range(0.4f, 1.4f);
         if (useSession) SetupFromSession();
+        if (HasPitLane && (pitBoxes == null || pitBoxes.Length == 0)) BuildPitCrews();
         else
         {
             playerRacer = new Racer { name = "YOU", code = "YOU", color = Color.white, isPlayer = true, tr = player.transform };
@@ -375,7 +376,7 @@ public class RaceManager : MonoBehaviour
         var cam = Camera.main != null ? Camera.main.GetComponent<ChaseCamera>() : null;
         if (cam != null)
         {
-            cam.view = (ChaseCamera.View)Mathf.Clamp(settings.defaultCamera, 0, 2);
+            cam.view = (ChaseCamera.View)Mathf.Clamp(settings.defaultCamera, 0, 3);
             cam.baseFov = settings.fieldOfView;
             cam.shake = settings.cameraShake;
         }
@@ -479,7 +480,7 @@ public class RaceManager : MonoBehaviour
     public void OnAiPitStop(RaceAI ai, bool arriving)
     {
         if (pitBoxes == null || ai.team < 0 || ai.team >= pitBoxes.Length || pitBoxes[ai.team] == null) return;
-        if (arriving) pitBoxes[ai.team].SetWorking(true);
+        if (arriving) pitBoxes[ai.team].Begin(ai.StopTime);
         else { pitBoxes[ai.team].SetWorking(false); pitBoxes[ai.team].ShowGreen(); }
     }
 
@@ -686,6 +687,8 @@ public class RaceManager : MonoBehaviour
             if (r.isPlayer || !r.ai.gameObject.activeSelf) continue;
             r.prevProgress = r.progress;
             r.ai.Step(dt, racing, r.finished, aiSkill);
+            if ((r.ai.Pit == RaceAI.PitState.Entering || r.ai.Pit == RaceAI.PitState.InLane) && pitBoxes != null && r.team >= 0 && r.team < pitBoxes.Length && pitBoxes[r.team] != null)
+                pitBoxes[r.team].Prepare();
             r.progress = r.ai.progress;
             r.lateral = r.ai.lane;
             r.speed = r.ai.Speed;
@@ -716,6 +719,22 @@ public class RaceManager : MonoBehaviour
     }
 
     float body0Y = -1e6f;
+
+    // One pit box and stop crew per team, on the real pit lane at the team's stopping point
+    void BuildPitCrews()
+    {
+        var parent = new GameObject("PitCrews").transform;
+        pitBoxes = new PitBox[boxDistances.Length];
+        for (int t = 0; t < boxDistances.Length && t < GameSession.Teams.Length; t++)
+        {
+            float d = boxDistances[t];
+            Vector3 pos = track.PointAt(d) + track.RightAt(d) * PitLat(d);
+            if (GroundAt(pos, out float gy)) pos.y = gy;
+            Vector3 tan = track.TangentAt(d); tan.y = 0f;
+            pitBoxes[t] = PitBox.Create(parent, t, pos, Quaternion.LookRotation(tan.normalized), PitSide, GameSession.Teams[t].primary, GameSession.Teams[t].secondary);
+            pitBoxes[t].trackDistance = d;
+        }
+    }
     static readonly RaycastHit[] groundHits = new RaycastHit[8];
 
     // Height of the drivable surface under a point (ignores cars, walls and anything above head height).
@@ -735,6 +754,7 @@ public class RaceManager : MonoBehaviour
 
     void StartPlayerPit(float lateral)
     {
+        if (pitBoxes != null && playerRacer.team < pitBoxes.Length && pitBoxes[playerRacer.team] != null) pitBoxes[playerRacer.team].Prepare();
         var rb = player.GetComponent<Rigidbody>();
         rb.linearVelocity = Vector3.zero;
         rb.isKinematic = true;
@@ -770,7 +790,7 @@ public class RaceManager : MonoBehaviour
                     pitPhase = PitPhase.Service;
                     pitTimer = 0f;
                     serviceTime = 2.3f + Random.value * 0.6f + (Random.value < 0.06f ? 1.8f : 0f);
-                    if (box != null) box.SetWorking(true);
+                    if (box != null) box.Begin(serviceTime);
                     if (playerAudio != null) playerAudio.PlayPitGun();
                 }
                 break;

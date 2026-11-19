@@ -354,6 +354,7 @@ public static class CircuitBuilder
         track.halfWidth = id == "Monaco" ? 4.6f : Mathf.Clamp(data.halfWidth, 4.5f, 8f);
         track.trackName = info != null ? info.name : id;
 
+        int verge = BuildVerges(root, map, id);
         Environment(root, track.PointAt(0));
 
         // Race manager + pit lane + DRS
@@ -397,7 +398,81 @@ public static class CircuitBuilder
         AddSceneToBuild(scenePath, -1);
         AssetDatabase.SaveAssets();
         Debug.Log($"{id} built: lap {track.length:0} m ({track.points.Length} pts, {data.centreSource}), half width {track.halfWidth:0.0}, " +
-                  $"axis fit error {err:0.00} m, {colliders} colliders, DRS zones {manager.drsZones.Length}, {pitNote}. Saved {scenePath}");
+                  $"axis fit error {err:0.00} m, {colliders} colliders, embankment fill {verge} m², DRS zones {manager.drsZones.Length}, {pitNote}. Saved {scenePath}");
+    }
+
+    // The pack's roads sit on embankments: off the edge the terrain can be 3-4 m lower, so a car that runs wide
+    // drops off a ledge. Fill both sides with a grass slope (1:3) from the road edge down to whatever surface is
+    // there. Where the existing run-off / gravel / grass is already high enough the fill stays just below it (hidden).
+    static int BuildVerges(GameObject root, GameObject map, string id)
+    {
+        float[] offs = id == "Monaco" ? new[] { 0f, 1f, 2.5f, 4f, 6f } : new[] { 0f, 1.5f, 3f, 5f, 8f, 12f, 17f, 24f, 32f };
+        float edge = track.halfWidth + 1.2f, slope = 1f / 3f, step = 4f;
+        var grassPhys = SurfaceMat("Grass", 0.6f);
+        Material grassMat = null;
+        foreach (var r in map.GetComponentsInChildren<Renderer>(true))
+            foreach (var m in r.sharedMaterials)
+                if (m != null && (m.name.Contains("Terrain_Grass") || m.name.Contains("Verge_Grass") || m.name.Contains("Lawn"))) { grassMat = m; break; }
+        if (grassMat == null) grassMat = Mat("Verge_Grass", new Color(0.28f, 0.42f, 0.2f), 0f, 0.08f);
+        var hits = new RaycastHit[16];
+        int n = Mathf.CeilToInt(track.length / step);
+        float area = 0f;
+        var parent = new GameObject("Embankments");
+        parent.transform.SetParent(root.transform, false);
+        foreach (float side in new[] { -1f, 1f })
+        {
+            var verts = new List<Vector3>(); var uvs = new List<Vector2>(); var tris = new List<int>();
+            int cols = offs.Length;
+            for (int i = 0; i <= n; i++)
+            {
+                float d = i * step;
+                Vector3 c = track.PointAt(d), right = track.RightAt(d);
+                float roadY = c.y;
+                for (int k = 0; k < cols; k++)
+                {
+                    Vector3 p = c + right * side * (edge + offs[k]);
+                    float fill = roadY - 0.08f - offs[k] * slope;
+                    // Highest ground-like surface near road level (ignore walls, roofs, cars)
+                    int hc = Physics.RaycastNonAlloc(new Vector3(p.x, roadY + 1.5f, p.z), Vector3.down, hits, 60f, ~0, QueryTriggerInteraction.Ignore);
+                    float top = float.MinValue;
+                    for (int h = 0; h < hc; h++)
+                    {
+                        var hit = hits[h];
+                        if (hit.collider.attachedRigidbody != null || hit.normal.y < 0.6f || hit.collider.name.StartsWith("Barrier")) continue;
+                        if (hit.collider.transform.IsChildOf(parent.transform)) continue;
+                        top = Mathf.Max(top, hit.point.y);
+                    }
+                    float y = top > fill ? top - 0.06f : fill;
+                    if (top > fill && k > 0) area += 0f; else if (k > 0) area += step * (offs[k] - offs[k - 1]);
+                    verts.Add(new Vector3(p.x, y, p.z));
+                    uvs.Add(new Vector2((edge + offs[k]) / 5f, d / 5f));
+                }
+            }
+            for (int i = 0; i < n; i++)
+                for (int k = 0; k < cols - 1; k++)
+                {
+                    int a = i * cols + k, b = a + 1, c2 = a + cols, d2 = c2 + 1;
+                    if (side > 0) { tris.Add(a); tris.Add(c2); tris.Add(b); tris.Add(b); tris.Add(c2); tris.Add(d2); }
+                    else { tris.Add(a); tris.Add(b); tris.Add(c2); tris.Add(b); tris.Add(d2); tris.Add(c2); }
+                }
+            var mesh = new UnityEngine.Mesh { name = id + "_Embankment_" + (side < 0 ? "L" : "R"), indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
+            mesh.SetVertices(verts); mesh.SetUVs(0, uvs); mesh.SetTriangles(tris, 0);
+            mesh.RecalculateNormals(); mesh.RecalculateBounds();
+            string meshPath = GenDir + "/" + id + "/" + mesh.name + ".asset";
+            EnsureFolder(GenDir + "/" + id);
+            AssetDatabase.DeleteAsset(meshPath);
+            AssetDatabase.CreateAsset(mesh, meshPath);
+            var go = new GameObject("Embankment_" + (side < 0 ? "L" : "R"));
+            go.transform.SetParent(parent.transform, false);
+            go.AddComponent<MeshFilter>().sharedMesh = mesh;
+            var mr = go.AddComponent<MeshRenderer>();
+            mr.sharedMaterial = grassMat;
+            var mc = go.AddComponent<MeshCollider>();
+            mc.sharedMesh = mesh;
+            mc.sharedMaterial = grassPhys;
+        }
+        Physics.SyncTransforms();
+        return Mathf.RoundToInt(area);
     }
 
     // Colliders on the Col_* surfaces, helper objects hidden, imported lights/cameras removed
@@ -752,24 +827,26 @@ public static class CircuitBuilder
         sun.color = new Color(1f, 0.96f, 0.88f);
         sun.shadows = LightShadows.Soft;
         sun.shadowStrength = 0.85f;
-        sun.transform.rotation = Quaternion.Euler(48f, -35f, 0f);
+        sun.transform.rotation = Quaternion.Euler(38f, -35f, 0f);
         RenderSettings.sun = sun;
 
-        var sky = AssetDatabase.LoadAssetAtPath<Material>(GenDir + "/Sky.mat");
-        if (sky == null) { sky = new Material(Shader.Find("Skybox/Procedural")); AssetDatabase.CreateAsset(sky, GenDir + "/Sky.mat"); }
-        sky.SetFloat("_SunSize", 0.035f);
-        sky.SetFloat("_AtmosphereThickness", 0.85f);
-        sky.SetColor("_SkyTint", new Color(0.45f, 0.6f, 0.85f));
-        sky.SetColor("_GroundColor", new Color(0.36f, 0.38f, 0.36f));
-        sky.SetFloat("_Exposure", 1.25f);
-        RenderSettings.skybox = sky;
+        var sky = AssetDatabase.LoadAssetAtPath<Material>(GenDir + "/SkyPanorama.mat");
+        if (sky == null) { sky = new Material(Shader.Find("Skybox/Panoramic")); AssetDatabase.CreateAsset(sky, GenDir + "/SkyPanorama.mat"); }
+        sky.shader = Shader.Find("Skybox/Panoramic");
+        sky.SetTexture("_MainTex", SkyTexture(-sun.transform.forward));
+        sky.SetFloat("_Mapping", 1f);
+        sky.SetFloat("_ImageType", 0f);
+        sky.SetFloat("_Exposure", 1.05f);
+        sky.SetFloat("_Rotation", 0f);
+        EditorUtility.SetDirty(sky);        RenderSettings.skybox = sky;
         RenderSettings.ambientMode = AmbientMode.Skybox;
         RenderSettings.ambientIntensity = 1.05f;
         RenderSettings.fog = true;
         RenderSettings.fogMode = FogMode.Linear;
         RenderSettings.fogColor = new Color(0.68f, 0.76f, 0.86f);
-        RenderSettings.fogStartDistance = 350f;
-        RenderSettings.fogEndDistance = 2600f;
+        RenderSettings.fogColor = new Color(0.72f, 0.8f, 0.9f);
+        RenderSettings.fogStartDistance = 250f;
+        RenderSettings.fogEndDistance = 3200f;
         DynamicGI.UpdateEnvironment();
 
         // Post-processing: filmic tonemapping, gentle bloom, a little warmth and contrast
@@ -792,6 +869,70 @@ public static class CircuitBuilder
             AssetDatabase.SaveAssets();
         }
         vol.sharedProfile = prof;
+    }
+
+    // Panoramic daytime sky: deep blue zenith, pale hazy horizon, warm glow round the sun, fbm cumulus clouds
+    // projected on a cloud layer (thin towards the horizon). Generated once and saved as a texture asset.
+    static Texture2D SkyTexture(Vector3 sunDir)
+    {
+        string path = GenDir + "/SkyPanorama.png";
+        var existing = AssetDatabase.LoadAssetAtPath<Texture2D>(path);
+        if (existing != null) return existing;
+        int w = 2048, h = 1024;
+        var px = new Color[w * h];
+        var rnd = new System.Random(7);
+        var perm = new int[512]; for (int i = 0; i < 256; i++) perm[i] = i;
+        for (int i = 255; i > 0; i--) { int j = rnd.Next(i + 1); int tmp = perm[i]; perm[i] = perm[j]; perm[j] = tmp; }
+        for (int i = 0; i < 256; i++) perm[256 + i] = perm[i];
+        float Hash(int x, int y) => perm[(perm[x & 255] + y) & 511] / 255f;
+        float VNoise(float x, float y)
+        {
+            int xi = Mathf.FloorToInt(x), yi = Mathf.FloorToInt(y);
+            float fx = x - xi, fy = y - yi;
+            fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy);
+            return Mathf.Lerp(Mathf.Lerp(Hash(xi, yi), Hash(xi + 1, yi), fx), Mathf.Lerp(Hash(xi, yi + 1), Hash(xi + 1, yi + 1), fx), fy);
+        }
+        float Fbm(float x, float y) { float s = 0, a = 0.5f; for (int o = 0; o < 6; o++) { s += a * VNoise(x, y); x *= 2.03f; y *= 2.03f; a *= 0.5f; } return s; }
+        Color zenith = new Color(0.16f, 0.36f, 0.72f), horizon = new Color(0.72f, 0.82f, 0.93f), ground = new Color(0.42f, 0.45f, 0.44f);
+        for (int y = 0; y < h; y++)
+        {
+            float lat = (y + 0.5f) / h * Mathf.PI - Mathf.PI / 2f;    // -90 (down) .. +90 (up)
+            for (int x = 0; x < w; x++)
+            {
+                float lon = (x + 0.5f) / w * 2f * Mathf.PI - Mathf.PI;
+                Vector3 dir = new Vector3(Mathf.Cos(lat) * Mathf.Sin(lon), Mathf.Sin(lat), Mathf.Cos(lat) * Mathf.Cos(lon));
+                Color c;
+                if (dir.y < 0f) c = Color.Lerp(horizon * 0.95f, ground, Mathf.Clamp01(-dir.y * 4f));
+                else
+                {
+                    c = Color.Lerp(horizon, zenith, Mathf.Pow(dir.y, 0.45f));
+                    float sunDot = Mathf.Max(0f, Vector3.Dot(dir, sunDir));
+                    c += new Color(1f, 0.85f, 0.6f) * (Mathf.Pow(sunDot, 8f) * 0.25f + Mathf.Pow(sunDot, 200f) * 0.8f);
+                    // Cloud layer
+                    float py = Mathf.Max(dir.y, 0.02f);
+                    float u = dir.x / py * 1.6f, v = dir.z / py * 1.6f;
+                    float n = Fbm(u + 40f, v + 17f);
+                    float cover = Mathf.SmoothStep(0.48f, 0.72f, n) * Mathf.SmoothStep(0.02f, 0.18f, dir.y);
+                    float shade = Mathf.Lerp(0.78f, 1.05f, Mathf.SmoothStep(0.5f, 0.85f, Fbm(u * 1.7f + 3f, v * 1.7f + 9f)));
+                    Color cloud = new Color(1f, 0.99f, 0.97f) * shade + new Color(1f, 0.9f, 0.7f) * Mathf.Pow(sunDot, 6f) * 0.25f;
+                    c = Color.Lerp(c, cloud, cover * 0.92f);
+                    // Haze near the horizon
+                    c = Color.Lerp(c, horizon, Mathf.Pow(1f - dir.y, 10f) * 0.6f);
+                }
+                c.a = 1f;
+                px[y * w + x] = c;
+            }
+        }
+        var tex = new Texture2D(w, h, TextureFormat.RGB24, false);
+        tex.SetPixels(px); tex.Apply();
+        System.IO.File.WriteAllBytes(path, tex.EncodeToPNG());
+        Object.DestroyImmediate(tex);
+        AssetDatabase.ImportAsset(path);
+        var ti = (TextureImporter)AssetImporter.GetAtPath(path);
+        ti.wrapModeU = TextureWrapMode.Repeat; ti.wrapModeV = TextureWrapMode.Clamp;
+        ti.maxTextureSize = 2048; ti.mipmapEnabled = false; ti.textureCompression = TextureImporterCompression.CompressedHQ;
+        ti.SaveAndReimport();
+        return AssetDatabase.LoadAssetAtPath<Texture2D>(path);
     }
 
     // Start lights on a gantry over the start/finish line
@@ -910,14 +1051,15 @@ public static class CircuitBuilder
         camData.antialiasing = AntialiasingMode.SubpixelMorphologicalAntiAliasing;
         var follow = go.AddComponent<ChaseCamera>();
         follow.target = player.transform;
-        follow.distance = 7f;
-        follow.height = 2.2f;
         // TV pod above the airbox, cockpit at the driver's eyes (2026 car proportions)
         var geo = player.GetComponent<CarGeometry>();
         float headZ = geo != null ? geo.headZ : -0.2f, headY = geo != null ? geo.headY : 0.95f;
-        follow.tvPodOffset = new Vector3(0, headY + 0.32f, headZ - 0.55f);
-        follow.tvPodPitch = 7f;
-        follow.cockpitOffset = new Vector3(0, headY - 0.02f, headZ + 0.05f);
+        follow.tvPodOffset = new Vector3(0, headY + 0.42f, headZ - 0.2f);
+        follow.tvPodPitch = 8f;
+        follow.cockpitOffset = new Vector3(0, headY + 0.03f, headZ + 0.12f);
+        follow.distance = 5.6f;
+        follow.height = 1.45f;
+        follow.view = ChaseCamera.View.Chase;
         go.transform.position = player.transform.TransformPoint(follow.tvPodOffset);
         go.transform.rotation = player.transform.rotation;
     }

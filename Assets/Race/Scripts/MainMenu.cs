@@ -682,10 +682,11 @@ public class MainMenu : MonoBehaviour
         Section(ref y, x, w, s, "Sound");
         FloatSlider(ref y, x, w, s, "Master volume", ref st.masterVolume);
         FloatSlider(ref y, x, w, s, "Engine volume", ref st.engineVolume);
+        Choice(ref y, x, w, s, "Engine sound", ref st.engineSound, EngineAudio.EngineNames);
         Toggle(ref y, x, w, s, "Team radio", ref st.teamRadio);
         Section(ref y, x, w, s, "Display");
         Choice(ref y, x, w, s, "Speed", ref UnitIndex(st), new[] { "km/h", "mph" });
-        Choice(ref y, x, w, s, "Camera", ref st.defaultCamera, new[] { "TV pod", "Chase", "Cockpit" });
+        Choice(ref y, x, w, s, "Camera", ref st.defaultCamera, new[] { "Chase", "T-cam", "Cockpit", "Far" });
         Toggle(ref y, x, w, s, "Driver name tags", ref st.nameTags);
         Toggle(ref y, x, w, s, "Minimap", ref st.showMinimap);
         Toggle(ref y, x, w, s, "Camera shake on impacts", ref st.cameraShake);
@@ -731,7 +732,7 @@ public class MainMenu : MonoBehaviour
         {
             { "Throttle", "W / Up", "Right trigger" }, { "Brake (hold when stopped: reverse)", "S / Down", "Left trigger" },
             { "Steer", "A D / Left Right", "Left stick" }, { "Gear up / down (manual)", "E / Q", "RB / LB" },
-            { "ERS boost", "Left Shift", "X" }, { "DRS (in a DRS zone)", "F", "Y" }, { "Camera: TV pod / chase / cockpit", "C", "-" },
+            { "ERS boost", "Left Shift", "X" }, { "DRS (in a DRS zone)", "F", "Y" }, { "Camera: chase / T-cam / cockpit / far", "C", "-" },
             { "Request pit stop", "B", "-" }, { "Pit tyres: Soft / Medium / Hard", "1 / 2 / 3", "-" },
             { "Back on track", "R", "-" }, { "Pause", "Esc / P", "Start" }, { "Show help", "H", "-" }, { "Results after the flag", "Tab", "-" }
         };

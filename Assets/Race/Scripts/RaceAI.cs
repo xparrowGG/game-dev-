@@ -30,6 +30,7 @@ public class RaceAI : MonoBehaviour
 
     public enum PitState { None, Entering, InLane, Stopped, Leaving }
     public PitState Pit { get; private set; }
+    public float StopTime => stopTime;
     public int PitStops { get; private set; }
     public bool TyresOff { get; private set; }
     public bool TyresChanged { get; set; }   // set when new tyres go on; the race manager repaints them

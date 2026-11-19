@@ -14,7 +14,8 @@ public class GameSettings
     public float masterVolume = 0.8f;
     public float engineVolume = 0.7f;
     public bool useMph;
-    public int defaultCamera;             // 0 TV pod, 1 chase, 2 cockpit
+    public int defaultCamera;             // 0 chase, 1 T-cam, 2 cockpit, 3 far chase
+    public int engineSound;               // 0 V10, 1 V8, 2 V12, 3 V6 turbo hybrid
     public bool abs = true, tractionControl = true, steeringAssist = true, autoGearbox = true;
     public bool brakingLine = true;       // green / yellow / red braking markers on the track
     public bool teamRadio = true;         // race engineer messages
