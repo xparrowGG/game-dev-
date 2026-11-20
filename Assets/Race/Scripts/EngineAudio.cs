@@ -1,16 +1,8 @@
 using UnityEngine;
 
-// Procedural F1 engine audio, no sound files needed. Unlike a sum of sine tones, this models how a racing
-// engine actually makes its sound:
-//  - every cylinder firing sends a pressure pulse down the exhaust (pulse train at rpm/60 × cylinders/2),
-//    each cylinder slightly different, harder pulses under load
-//  - the pulses ring through exhaust and intake resonances (band-pass formants) and are driven into a soft
-//    clipper: the bright "scream" of a V10 comes from the high firing rate plus the upper formants
-//  - lifting off: quieter, darker, with overrun crackles; on the limiter the ignition cuts in and out
-//  - two exhaust banks slightly offset left/right for width; automatic level control keeps it pleasant
-// Engine choice (settings): V10 (2000s), V8 (2006-13), V12 (90s), V6 turbo hybrid (2014+, with turbo whistle).
-// Also: tyre squeal, wind, and one-shots (gear shift, crash, wheel guns, team radio).
-// With no car assigned it voices a rival (rpm and speed set from outside, 3D positioned).
+// Procedural F1 engine audio synthesizer with optional Resources/F1Audio/*.wav stem support.
+// Models 4-stroke multi-cylinder combustion pulses + phase-locked crank/firing harmonic orders +
+// resonant exhaust/intake biquad formants + turbo/MGU-K whine + overrun crackle + kerb/tyre/wind FX.
 [RequireComponent(typeof(AudioSource))]
 public class EngineAudio : MonoBehaviour
 {
@@ -18,90 +10,230 @@ public class EngineAudio : MonoBehaviour
 
     struct Profile
     {
-        public int cylinders; public float rpmMin, rpmMax, f2, f3, drive, bodyQ; public bool turbo;
+        public int cylinders;
+        public float rpmMin, rpmMax, f2, f3, drive, bodyQ;
+        public bool turbo;
     }
+
     static readonly Profile[] Profiles =
     {
-        new Profile { cylinders = 10, rpmMin = 7000f, rpmMax = 19000f, f2 = 2200f, f3 = 4300f, drive = 2.2f, bodyQ = 0.8f },
-        new Profile { cylinders = 8,  rpmMin = 6500f, rpmMax = 18000f, f2 = 1700f, f3 = 3600f, drive = 2.6f, bodyQ = 0.7f },
-        new Profile { cylinders = 12, rpmMin = 6000f, rpmMax = 17500f, f2 = 2700f, f3 = 5200f, drive = 1.8f, bodyQ = 0.9f },
-        new Profile { cylinders = 6,  rpmMin = 5000f, rpmMax = 12500f, f2 = 1150f, f3 = 2700f, drive = 2.0f, bodyQ = 0.6f, turbo = true },
+        new Profile { cylinders = 10, rpmMin = 6800f, rpmMax = 19000f, f2 = 2150f, f3 = 4250f, drive = 2.1f, bodyQ = 0.85f },
+        new Profile { cylinders = 8,  rpmMin = 6200f, rpmMax = 18000f, f2 = 1650f, f3 = 3550f, drive = 2.4f, bodyQ = 0.75f },
+        new Profile { cylinders = 12, rpmMin = 5800f, rpmMax = 17500f, f2 = 2650f, f3 = 5100f, drive = 1.85f, bodyQ = 0.92f },
+        new Profile { cylinders = 6,  rpmMin = 4800f, rpmMax = 12600f, f2 = 1120f, f3 = 2650f, drive = 2.15f, bodyQ = 0.68f, turbo = true },
     };
 
     public VehicleBase car;
-    public float volume = 0.6f;
-    public bool rival;                    // driven by externalRpm / externalSpeed instead of a car
+    public float volume = 0.75f;
+    public bool rival;
     [System.NonSerialized] public float externalRpm = 6000f, externalSpeed;
 
-    // values shared with the audio thread
-    volatile float firingHz = 200f, load, engineGain, squeal, wind, limiterCut, boost;
+    // Shared with audio thread (all safe defaults before Awake)
+    volatile bool initialized;
+    volatile int activeProfileIdx;
+    volatile float firingHz = 220f, crankHz = 73.3f, load = 0.25f, engineGain = 0.45f;
+    volatile float squeal, wind, limiterCut, boost, wastegate, mguk, kerbLevel, kerbHz = 68f, shiftCut;
+    volatile bool muteSynthEngine;
     Profile prof;
     int sampleRate = 48000;
 
-    // audio-thread state
-    double phase;
+    // Audio-thread state
+    double phase, crankPhase, sqPh, sqLfo, kerbPh;
     int cyl;
-    float pulseA, pulseB, crackle, hpA, hpB, agc = 1f, rms = 0.05f, windLp, sqBp1, sqBp2, turboPh;
-    double phSq, sqLfo;
+    float pulseA, pulseB, crackle, hpA, hpB, agc = 1f, rms = 0.06f, windLp, sqBp1, sqBp2, turboPh, mgukPh, wgPh;
     uint noise = 22222;
     readonly float[] cylAmp = new float[12];
-    Biquad bodyA = new Biquad(), f2A = new Biquad(), f3A = new Biquad(), bodyB = new Biquad(), f2B = new Biquad(), f3B = new Biquad(), crackBp = new Biquad();
+    Biquad bodyA = new Biquad(), f2A = new Biquad(), f3A = new Biquad();
+    Biquad bodyB = new Biquad(), f2B = new Biquad(), f3B = new Biquad();
+    Biquad crackBp = new Biquad();
     readonly float[] delay = new float[64];
     int delayPos;
 
-    AudioSource oneShots;
-    static AudioClip clunk, thud, gun, radio;
+    AudioSource mainSrc, oneShots;
+    AudioSource wavIdle, wavLow, wavMid, wavHigh, wavOffload, wavTurbo;
+    bool hasCustomEngineLoops;
+    static AudioClip clunk, thud, gun, radio, customKerbClip;
+    static bool optionalClipsChecked;
     int lastGear;
-    float lastImpact = -1f, smoothThrottle, smoothRpm = 4000f, limiterTimer;
+    float lastImpact = -1f, smoothThrottle = 0.2f, smoothRpm = 4800f, prevSmoothThrottle = 0.2f;
+    float limiterTimer, shiftCutTimer, blipTimer, wastegateTimer, lastKerbAudioTime = -1f;
 
     class Biquad
     {
         float b0, b1, b2, a1, a2, x1, x2, y1, y2;
+
         public void BandPass(float f, float q, float sr)
         {
-            f = Mathf.Clamp(f, 20f, sr * 0.45f);
-            float w0 = 2f * Mathf.PI * f / sr, alpha = Mathf.Sin(w0) / (2f * q), a0 = 1f + alpha;
-            b0 = alpha / a0; b1 = 0f; b2 = -alpha / a0; a1 = -2f * Mathf.Cos(w0) / a0; a2 = (1f - alpha) / a0;
+            if (sr <= 100f) sr = 48000f;
+            f = Mathf.Clamp(f, 20f, sr * 0.43f);
+            q = Mathf.Clamp(q, 0.35f, 8f);
+            float w0 = 2f * Mathf.PI * f / sr;
+            float alpha = Mathf.Sin(w0) / (2f * q);
+            float a0 = 1f + alpha;
+            if (a0 < 1e-5f) a0 = 1f;
+            b0 = alpha / a0;
+            b1 = 0f;
+            b2 = -alpha / a0;
+            a1 = -2f * Mathf.Cos(w0) / a0;
+            a2 = (1f - alpha) / a0;
         }
+
         public float Process(float x)
         {
             float y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-            x2 = x1; x1 = x; y2 = y1; y1 = y;
+            if (!float.IsFinite(y))
+            {
+                Reset();
+                return 0f;
+            }
+            x2 = x1;
+            x1 = x;
+            y2 = y1;
+            y1 = y;
             return y;
         }
+
+        public void Reset()
+        {
+            x1 = x2 = y1 = y2 = 0f;
+        }
+    }
+
+    void Awake()
+    {
+        EnsureInitialized();
     }
 
     void Start()
     {
-        if (car == null && !rival) car = GetComponentInParent<VehicleBase>();
-        sampleRate = AudioSettings.outputSampleRate;
-        prof = Profiles[Mathf.Clamp(GameSession.Settings.engineSound, 0, Profiles.Length - 1)];
-        var r = new System.Random(rival ? 11 : 3);
-        for (int i = 0; i < cylAmp.Length; i++) cylAmp[i] = 0.85f + (float)r.NextDouble() * 0.3f;
-        var src = GetComponent<AudioSource>();
-        src.clip = AudioClip.Create("EngineCarrier", sampleRate, 1, sampleRate, false);   // silent carrier, filled below
-        src.loop = true;
-        src.playOnAwake = true;
-        if (rival) { src.spatialBlend = 1f; src.minDistance = 10f; src.maxDistance = 260f; src.rolloffMode = AudioRolloffMode.Logarithmic; src.dopplerLevel = 1.4f; }
-        else src.spatialBlend = 0f;
-        src.Play();
-        volume = GameSession.Settings.engineVolume * (rival ? 0.75f : 0.5f);
+        EnsureInitialized();
+        if (Application.isPlaying && mainSrc != null && !mainSrc.isPlaying)
+            mainSrc.Play();
+    }
 
-        if (!rival)
+    void EnsureInitialized()
+    {
+        if (initialized) return;
+        if (car == null && !rival) car = GetComponentInParent<VehicleBase>();
+
+        int sr = AudioSettings.outputSampleRate;
+        sampleRate = sr > 1000 ? sr : 48000;
+
+        int pIdx = Mathf.Clamp(GameSession.Settings.engineSound, 0, Profiles.Length - 1);
+        activeProfileIdx = pIdx;
+        prof = Profiles[pIdx];
+
+        var r = new System.Random(rival ? 11 : 3);
+        for (int i = 0; i < cylAmp.Length; i++) cylAmp[i] = 0.88f + (float)r.NextDouble() * 0.24f;
+
+        smoothRpm = prof.rpmMin * 0.72f;
+        crankHz = smoothRpm / 60f;
+        firingHz = crankHz * prof.cylinders * 0.5f;
+        volume = Mathf.Clamp(GameSession.Settings.engineVolume, 0.05f, 1.5f) * (rival ? 0.70f : 0.95f);
+        engineGain = volume * 0.5f;
+
+        mainSrc = GetComponent<AudioSource>();
+        if (mainSrc != null)
         {
-            // One-shots need their own object: the synthesiser's filter may only feed one AudioSource
+            // Non-zero micro-dither carrier ensures FMOD never virtualizes OnAudioFilterRead as silent
+            var carrier = AudioClip.Create("EngineCarrier", sampleRate, 1, sampleRate, false);
+            var dither = new float[sampleRate];
+            for (int i = 0; i < dither.Length; i++) dither[i] = (i & 1) == 0 ? 1e-4f : -1e-4f;
+            carrier.SetData(dither, 0);
+
+            mainSrc.clip = carrier;
+            mainSrc.loop = true;
+            mainSrc.playOnAwake = false;
+            mainSrc.volume = 1f;
+            mainSrc.pitch = 1f;
+            mainSrc.bypassEffects = false;
+            mainSrc.bypassListenerEffects = false;
+            mainSrc.bypassReverbZones = false;
+            mainSrc.priority = rival ? 64 : 0;
+
+            if (rival)
+            {
+                mainSrc.spatialBlend = 1f;
+                mainSrc.minDistance = 10f;
+                mainSrc.maxDistance = 260f;
+                mainSrc.rolloffMode = AudioRolloffMode.Logarithmic;
+                mainSrc.dopplerLevel = 1.4f;
+            }
+            else
+            {
+                mainSrc.spatialBlend = 0f;
+            }
+
+            if (Application.isPlaying && !mainSrc.isPlaying) mainSrc.Play();
+        }
+
+        if (!rival && Application.isPlaying)
+        {
             var sfx = new GameObject("SFX");
             sfx.transform.SetParent(transform, false);
             oneShots = sfx.AddComponent<AudioSource>();
             oneShots.spatialBlend = 0f;
             oneShots.playOnAwake = false;
+            oneShots.priority = 16;
             BuildClips();
+            SetupOptionalEngineLoops();
         }
+
+        initialized = true;
+    }
+
+    void SetupOptionalEngineLoops()
+    {
+        if (!optionalClipsChecked)
+        {
+            optionalClipsChecked = true;
+            var shift = Resources.Load<AudioClip>("F1Audio/shift");
+            var crash = Resources.Load<AudioClip>("F1Audio/crash");
+            customKerbClip = Resources.Load<AudioClip>("F1Audio/kerb");
+            if (shift != null) clunk = shift;
+            if (crash != null) thud = crash;
+        }
+        var cIdle = Resources.Load<AudioClip>("F1Audio/engine_idle");
+        var cLow = Resources.Load<AudioClip>("F1Audio/engine_low");
+        var cMid = Resources.Load<AudioClip>("F1Audio/engine_mid");
+        var cHigh = Resources.Load<AudioClip>("F1Audio/engine_high");
+        if (cIdle != null && cLow != null && cMid != null && cHigh != null)
+        {
+            hasCustomEngineLoops = true;
+            muteSynthEngine = true;
+            wavIdle = MakeLoop("WAV_Idle", cIdle);
+            wavLow = MakeLoop("WAV_Low", cLow);
+            wavMid = MakeLoop("WAV_Mid", cMid);
+            wavHigh = MakeLoop("WAV_High", cHigh);
+            var cOff = Resources.Load<AudioClip>("F1Audio/engine_offload");
+            if (cOff != null) wavOffload = MakeLoop("WAV_Offload", cOff);
+            var cTur = Resources.Load<AudioClip>("F1Audio/turbo");
+            if (cTur != null) wavTurbo = MakeLoop("WAV_Turbo", cTur);
+        }
+    }
+
+    AudioSource MakeLoop(string n, AudioClip clip)
+    {
+        var go = new GameObject(n);
+        go.transform.SetParent(transform, false);
+        var a = go.AddComponent<AudioSource>();
+        a.clip = clip;
+        a.loop = true;
+        a.spatialBlend = 0f;
+        a.volume = 0f;
+        a.Play();
+        return a;
     }
 
     void Update()
     {
+        if (!initialized) EnsureInitialized();
+
+        float dt = Mathf.Max(Time.deltaTime, 1e-4f);
         float rpm01, speed, throttle;
+        float onKerbNow = 0f;
+        float deploySignal = 0f;
+
         if (rival || car == null)
         {
             rpm01 = Mathf.InverseLerp(4000f, 12500f, externalRpm);
@@ -111,70 +243,197 @@ public class EngineAudio : MonoBehaviour
         else
         {
             float maxRpm = car.MaxRpm > 0f ? car.MaxRpm : 12500f;
-            float rpm = car.Rpm > 0f ? car.Rpm : 3000f + car.SpeedKmh * 40f;
-            rpm01 = Mathf.InverseLerp(4000f, maxRpm, rpm);
+            float rpm = car.Rpm > 0f ? car.Rpm : 3500f + car.SpeedKmh * 38f;
+            rpm01 = Mathf.InverseLerp(3600f, maxRpm, rpm);
             speed = Mathf.Abs(car.Speed);
             var f1 = car as F1Car;
             throttle = f1 != null ? f1.ThrottleInput : 0.6f;
+
             float slip = f1 != null ? Mathf.Clamp01((f1.TyreSlip - 0.35f) / 0.65f) : 0f;
-            squeal = Mathf.MoveTowards(squeal, slip * Mathf.Clamp01(speed / 15f), Time.deltaTime * 4f);
+            squeal = Mathf.MoveTowards(squeal, slip * Mathf.Clamp01(speed / 14f), dt * 5f);
 
-            // Rev limiter: ignition cuts in and out
-            if (rpm >= maxRpm - 60f && throttle > 0.5f) { limiterTimer += Time.deltaTime; limiterCut = Mathf.Repeat(limiterTimer * 22f, 1f) < 0.45f ? 1f : 0f; }
-            else { limiterTimer = 0f; limiterCut = 0f; }
+            // Kerb tactile thump when wheels ride sawtooth kerbs
+            if (f1 != null && f1.OnKerb && speed > 8f)
+            {
+                onKerbNow = Mathf.Clamp01(speed / 60f);
+                kerbHz = Mathf.Lerp(45f, 88f, Mathf.Clamp01(speed / 75f));
+                if (customKerbClip != null && oneShots != null && Time.time - lastKerbAudioTime > 0.08f)
+                {
+                    lastKerbAudioTime = Time.time;
+                    oneShots.PlayOneShot(customKerbClip, onKerbNow * 0.45f * volume);
+                }
+            }
 
-            if (car.Gear != lastGear && lastGear != 0 && car.Gear > 0 && clunk != null) oneShots.PlayOneShot(clunk, 0.3f * volume);
+            // MGU-K / ERS deployment or regen pitch modulation
+            if (f1 != null)
+                deploySignal = (throttle > 0.7f && f1.ErsCharge > 0.05f) ? 1f : (f1.LongitudinalG < -1.2f ? 0.8f : 0.25f);
+
+            // Rev limiter ignition cut
+            if (rpm >= maxRpm - 70f && throttle > 0.45f)
+            {
+                limiterTimer += dt;
+                limiterCut = Mathf.Repeat(limiterTimer * 24f, 1f) < 0.48f ? 1f : 0f;
+            }
+            else
+            {
+                limiterTimer = 0f;
+                limiterCut = 0f;
+            }
+
+            // Upshift ignition-cut bark vs Downshift throttle blip
+            if (lastGear > 0 && car.Gear > lastGear)
+            {
+                shiftCutTimer = 0.048f;
+                if (clunk != null && oneShots != null) oneShots.PlayOneShot(clunk, 0.36f * volume);
+            }
+            else if (lastGear > 1 && car.Gear > 0 && car.Gear < lastGear)
+            {
+                blipTimer = 0.095f;
+                if (clunk != null && oneShots != null) oneShots.PlayOneShot(clunk, 0.28f * volume);
+            }
             lastGear = car.Gear;
-            if (car.LastImpactTime > lastImpact + 0.2f && car.LastImpactStrength > 4f && thud != null)
-                oneShots.PlayOneShot(thud, Mathf.Clamp01(car.LastImpactStrength / 25f) * 1.4f * volume + 0.2f);
+
+            if (car.LastImpactTime > lastImpact + 0.2f && car.LastImpactStrength > 4f && thud != null && oneShots != null)
+                oneShots.PlayOneShot(thud, Mathf.Clamp01(car.LastImpactStrength / 24f) * 1.4f * volume + 0.2f);
             lastImpact = Mathf.Max(lastImpact, car.LastImpactTime);
         }
-        smoothRpm = Mathf.Lerp(smoothRpm, Mathf.Lerp(prof.rpmMin * 0.55f, prof.rpmMax, rpm01), 1f - Mathf.Exp(-20f * Time.deltaTime));
-        smoothThrottle = Mathf.Lerp(smoothThrottle, throttle, 1f - Mathf.Exp(-12f * Time.deltaTime));
-        bool running = Time.timeScale > 0f;
-        firingHz = smoothRpm / 60f * prof.cylinders * 0.5f;
+
+        if (shiftCutTimer > 0f) shiftCutTimer = Mathf.Max(0f, shiftCutTimer - dt);
+        if (blipTimer > 0f) blipTimer = Mathf.Max(0f, blipTimer - dt);
+
+        // Downshift blip transiently flares engine speed & throttle load
+        float blipAmt = blipTimer > 0f ? Mathf.Sin((blipTimer / 0.095f) * Mathf.PI) * 0.24f : 0f;
+        float targetRpm = Mathf.Lerp(prof.rpmMin * 0.65f, prof.rpmMax, Mathf.Clamp01(rpm01 + blipAmt));
+        smoothRpm = Mathf.Lerp(smoothRpm, targetRpm, 1f - Mathf.Exp(-24f * dt));
+
+        float effThrottle = Mathf.Max(throttle, blipAmt * 3.5f);
+        if (prevSmoothThrottle > 0.65f && effThrottle < 0.25f && rpm01 > 0.45f)
+            wastegateTimer = 0.26f;
+        if (wastegateTimer > 0f) wastegateTimer = Mathf.Max(0f, wastegateTimer - dt);
+        prevSmoothThrottle = smoothThrottle;
+        smoothThrottle = Mathf.Lerp(smoothThrottle, effThrottle, 1f - Mathf.Exp(-14f * dt));
+
+        volume = Mathf.Clamp(GameSession.Settings.engineVolume, 0.05f, 1.5f) * (rival ? 0.70f : 0.95f);
+        bool running = Time.timeScale > 0f && (!rival || mainSrc == null || mainSrc.isPlaying);
+        crankHz = smoothRpm / 60f;
+        firingHz = crankHz * prof.cylinders * 0.5f;
         load = smoothThrottle;
-        boost = prof.turbo ? Mathf.Lerp(boost, smoothThrottle * Mathf.Clamp01(rpm01 * 1.3f), 1f - Mathf.Exp(-3f * Time.deltaTime)) : 0f;
-        engineGain = running ? volume * Mathf.Lerp(0.45f, 1f, smoothThrottle) : 0f;
-        wind = running ? volume * Mathf.Pow(Mathf.Clamp01(speed / 90f), 2f) * 0.35f : 0f;
+        shiftCut = shiftCutTimer > 0f ? 0.78f : 0f;
+        boost = prof.turbo ? Mathf.Lerp(boost, smoothThrottle * Mathf.Clamp01(rpm01 * 1.35f), 1f - Mathf.Exp(-4f * dt)) : 0f;
+        wastegate = (prof.turbo && wastegateTimer > 0f) ? Mathf.Clamp01(wastegateTimer / 0.26f) : 0f;
+        mguk = prof.turbo ? deploySignal * Mathf.Clamp01(rpm01 * 0.9f + 0.2f) : 0f;
+        engineGain = running ? volume * Mathf.Lerp(0.58f, 1.0f, smoothThrottle) : 0f;
+        wind = running ? volume * Mathf.Pow(Mathf.Clamp01(speed / 92f), 1.85f) * 0.36f : 0f;
+        kerbLevel = running ? onKerbNow * volume : 0f;
         if (!running) squeal = 0f;
+
+        if (hasCustomEngineLoops)
+        {
+            float baseGain = running ? volume * Mathf.Lerp(0.55f, 1.0f, smoothThrottle) : 0f;
+            float wIdle = Mathf.Clamp01(1f - rpm01 * 3.2f);
+            float wLow = Mathf.Clamp01(1f - Mathf.Abs(rpm01 - 0.30f) * 3.2f);
+            float wMid = Mathf.Clamp01(1f - Mathf.Abs(rpm01 - 0.62f) * 3.0f);
+            float wHigh = Mathf.Clamp01((rpm01 - 0.58f) * 2.6f);
+            float wSum = Mathf.Max(0.001f, wIdle + wLow + wMid + wHigh);
+            float pScale = Mathf.Lerp(0.82f, 1.32f, rpm01);
+            wavIdle.volume = baseGain * (wIdle / wSum); wavIdle.pitch = Mathf.Lerp(0.85f, 1.25f, rpm01 * 2f);
+            wavLow.volume = baseGain * (wLow / wSum);   wavLow.pitch = pScale * 0.95f;
+            wavMid.volume = baseGain * (wMid / wSum);   wavMid.pitch = pScale;
+            wavHigh.volume = baseGain * (wHigh / wSum); wavHigh.pitch = Mathf.Lerp(0.88f, 1.28f, rpm01);
+            if (wavOffload != null)
+            {
+                wavOffload.volume = running ? volume * Mathf.Clamp01((0.35f - smoothThrottle) * 2f) * rpm01 * 0.7f : 0f;
+                wavOffload.pitch = pScale;
+            }
+            if (wavTurbo != null)
+            {
+                wavTurbo.volume = running ? volume * boost * 0.45f : 0f;
+                wavTurbo.pitch = 0.85f + boost * 0.65f;
+            }
+        }
     }
 
     public void PlayPitGun()
     {
-        if (oneShots != null && gun != null) oneShots.PlayOneShot(gun, 0.6f * volume);
+        if (oneShots != null && gun != null) oneShots.PlayOneShot(gun, 0.65f * volume);
     }
 
     public void PlayRadio()
     {
-        if (oneShots != null && radio != null) oneShots.PlayOneShot(radio, 0.5f);
+        if (oneShots != null && radio != null) oneShots.PlayOneShot(radio, 0.55f);
     }
 
     float Noise()
     {
-        noise ^= noise << 13; noise ^= noise >> 17; noise ^= noise << 5;
+        noise ^= noise << 13;
+        noise ^= noise >> 17;
+        noise ^= noise << 5;
         return noise / (float)uint.MaxValue * 2f - 1f;
+    }
+
+    static float BandGain(float freqHz, float nyqLimit)
+    {
+        if (freqHz >= nyqLimit) return 0f;
+        float t = freqHz / nyqLimit;
+        return t > 0.75f ? Mathf.Clamp01(1f - (t - 0.75f) / 0.25f) : 1f;
     }
 
     void OnAudioFilterRead(float[] data, int channels)
     {
+        Synthesize(data, channels);
+    }
+
+    internal void Synthesize(float[] data, int channels)
+    {
+        if (!initialized || prof.cylinders <= 0 || sampleRate <= 0 || data == null || data.Length == 0)
+            return;
+
         float sr = sampleRate;
-        float fh = firingHz, ld = load, g = engineGain, sq = squeal, wd = wind, cut = limiterCut, bst = boost;
-        // Formants follow the engine: the body tracks the firing frequency, the upper bands rise a little with revs
+        float nyq = sr * 0.42f;
+        float chz = Mathf.Max(crankHz, 20f);
+        float fh = Mathf.Max(firingHz, 60f);
+        float ld = Mathf.Clamp01(load);
+        float g = engineGain;
+        float sq = squeal;
+        float wd = wind;
+        float cut = Mathf.Max(limiterCut, shiftCut);
+        float bst = boost;
+        float wg = wastegate;
+        float mk = mguk;
+        float kLvl = kerbLevel;
+        float kHz = kerbHz;
+        bool synthEng = !muteSynthEngine && g > 0.0005f;
+
         float revRise = Mathf.Clamp01(fh / 1600f);
-        bodyA.BandPass(fh, prof.bodyQ, sr); bodyB.BandPass(fh * 1.01f, prof.bodyQ, sr);
-        f2A.BandPass(prof.f2 * (0.85f + 0.3f * revRise), 1.6f, sr); f2B.BandPass(prof.f2 * (0.88f + 0.3f * revRise), 1.6f, sr);
-        f3A.BandPass(prof.f3 * (0.8f + 0.4f * revRise), 2.2f, sr); f3B.BandPass(prof.f3 * (0.83f + 0.4f * revRise), 2.2f, sr);
-        crackBp.BandPass(900f, 1.2f, sr);
+        bodyA.BandPass(fh, prof.bodyQ, sr);
+        bodyB.BandPass(fh * 1.012f, prof.bodyQ, sr);
+        f2A.BandPass(prof.f2 * (0.85f + 0.30f * revRise), 1.6f, sr);
+        f2B.BandPass(prof.f2 * (0.88f + 0.30f * revRise), 1.6f, sr);
+        f3A.BandPass(prof.f3 * (0.80f + 0.40f * revRise), 2.2f, sr);
+        f3B.BandPass(prof.f3 * (0.83f + 0.40f * revRise), 2.2f, sr);
+        crackBp.BandPass(950f, 1.15f, sr);
+
         double inc = fh / sr;
-        float decay = Mathf.Exp(-fh * 3.2f / sr);                       // each pulse dies away before the next one
-        float hpK = 1f - Mathf.Exp(-2f * Mathf.PI * 40f / sr);
-        float aw = 1f - Mathf.Exp(-2f * Mathf.PI * 450f / sr);
+        double crankInc = chz / sr;
+        float halfCyl = prof.cylinders * 0.5f;
+        float decay = Mathf.Exp(-fh * 2.8f / sr);
+        float hpK = 1f - Mathf.Exp(-2f * Mathf.PI * 38f / sr);
+        float aw = 1f - Mathf.Exp(-2f * Mathf.PI * 460f / sr);
         float crackDecay = Mathf.Exp(-1f / (0.018f * sr));
-        float drive = prof.drive * Mathf.Lerp(0.7f, 1.15f, ld);
-        int delaySamples = Mathf.Clamp(Mathf.RoundToInt(sr * 0.0006f), 1, delay.Length - 1);   // second bank ~0.6 ms later
+        float drive = prof.drive * Mathf.Lerp(0.75f, 1.25f, ld);
+        int delaySamples = Mathf.Clamp(Mathf.RoundToInt(sr * 0.00055f), 1, delay.Length - 1);
         double sqInc = 1050.0 / sr;
         float twoPi = 2f * Mathf.PI;
+
+        // Band-limited harmonic order weights per harmonic order of firing frequency (0.5x, 1x, 1.5x, 2x, 3x, 4x, 6x)
+        float scream = prof.cylinders >= 10 ? 1.15f : (prof.turbo ? 0.72f : 0.92f);
+        float g05 = BandGain(fh * 0.5f, nyq) * (prof.turbo ? 0.36f : 0.24f);
+        float g10 = BandGain(fh * 1.0f, nyq) * 0.52f;
+        float g15 = BandGain(fh * 1.5f, nyq) * 0.26f * scream;
+        float g20 = BandGain(fh * 2.0f, nyq) * (0.28f + 0.22f * ld) * scream;
+        float g30 = BandGain(fh * 3.0f, nyq) * (0.14f + 0.22f * ld) * scream;
+        float g40 = BandGain(fh * 4.0f, nyq) * (0.06f + 0.16f * ld) * scream;
+        float g60 = BandGain(fh * 6.0f, nyq) * (0.02f + 0.09f * ld) * scream;
 
         for (int i = 0; i < data.Length; i += channels)
         {
@@ -183,68 +442,219 @@ public class EngineAudio : MonoBehaviour
             {
                 phase -= 1.0;
                 cyl = (cyl + 1) % prof.cylinders;
-                float a = cylAmp[cyl] * (0.3f + 0.7f * ld) * (1f - cut);
-                if ((cyl & 1) == 0) pulseA += a; else pulseB += a;          // alternate banks
-                // Overrun: unburnt fuel popping in the exhaust when lifting at high revs
-                if (ld < 0.15f && fh > 500f && Noise() > 0.93f) crackle = 0.8f + 0.4f * Noise();
+                float a = cylAmp[cyl] * (0.35f + 0.65f * ld) * (1f - cut);
+                if ((cyl & 1) == 0) pulseA += a;
+                else pulseB += a;
+
+                if (ld < 0.16f && fh > 420f && Noise() > 0.91f)
+                    crackle = 0.85f + 0.45f * Noise();
             }
-            pulseA *= decay; pulseB *= decay;
-            float nA = Noise(), nB = Noise();
-            float xA = pulseA * (1f + 0.25f * nA), xB = pulseB * (1f + 0.25f * nB);
-            // Remove DC from the pulse trains
-            hpA += hpK * (xA - hpA); xA -= hpA;
-            hpB += hpK * (xB - hpB); xB -= hpB;
 
-            float bright = 0.35f + 0.65f * ld;
-            float sA = xA * 0.3f + bodyA.Process(xA) * 1.1f + f2A.Process(xA) * 0.9f * bright + f3A.Process(xA) * 0.55f * ld;
-            float sB = xB * 0.3f + bodyB.Process(xB) * 1.1f + f2B.Process(xB) * 0.9f * bright + f3B.Process(xB) * 0.55f * ld;
-            sA = (float)System.Math.Tanh(sA * drive);
-            sB = (float)System.Math.Tanh(sB * drive);
+            crankPhase += crankInc;
+            if (crankPhase >= 1.0) crankPhase -= 1.0;
 
-            crackle *= crackDecay;
-            float pop = crackle > 0.01f ? crackBp.Process(Noise() * crackle) * 2.2f : 0f;
+            pulseA *= decay;
+            pulseB *= decay;
 
-            // Turbo whistle (V6 hybrid)
-            float turbo = 0f;
-            if (prof.turbo && bst > 0.02f)
+            float eL = 0f, eR = 0f;
+            if (synthEng)
             {
-                turboPh += (2600f + 5200f * bst) / sr; if (turboPh > 1f) turboPh -= 1f;
-                turbo = Mathf.Sin(turboPh * twoPi) * 0.05f * bst;
+                // Phase-locked multi-order F1 harmonic wave (crisp, gapless tonal spine)
+                float th = (float)(crankPhase * halfCyl * twoPi);
+                float harm =
+                    Mathf.Sin(th * 0.5f) * g05 +
+                    Mathf.Sin(th) * g10 +
+                    Mathf.Sin(th * 1.5f + 0.4f) * g15 +
+                    Mathf.Sin(th * 2.0f + 0.8f) * g20 +
+                    Mathf.Sin(th * 3.0f + 1.1f) * g30 +
+                    Mathf.Sin(th * 4.0f + 1.5f) * g40 +
+                    Mathf.Sin(th * 6.0f + 0.2f) * g60;
+                harm *= (1f - cut * 0.85f);
+
+                // Uneven cylinder combustion pulses + resonant formants
+                float nA = Noise(), nB = Noise();
+                float xA = pulseA * (1f + 0.22f * nA);
+                float xB = pulseB * (1f + 0.22f * nB);
+                hpA += hpK * (xA - hpA); xA -= hpA;
+                hpB += hpK * (xB - hpB); xB -= hpB;
+
+                float bright = 0.40f + 0.60f * ld;
+                float pulseResA = xA * 0.25f + bodyA.Process(xA) * 1.05f + f2A.Process(xA) * 0.85f * bright + f3A.Process(xA) * 0.55f * ld;
+                float pulseResB = xB * 0.25f + bodyB.Process(xB) * 1.05f + f2B.Process(xB) * 0.85f * bright + f3B.Process(xB) * 0.55f * ld;
+
+                float sA = (float)System.Math.Tanh((harm * 0.62f + pulseResA * 0.48f) * drive);
+                float sB = (float)System.Math.Tanh((harm * 0.62f + pulseResB * 0.48f + 0.03f) * drive);
+
+                crackle *= crackDecay;
+                float pop = crackle > 0.01f ? crackBp.Process(Noise() * crackle) * 2.4f : 0f;
+
+                // V6 hybrid turbo spool + lift-off wastegate flutter + MGU-K electric whine
+                float hybridFx = 0f;
+                if (prof.turbo)
+                {
+                    if (bst > 0.02f)
+                    {
+                        turboPh += (2800f + 5700f * bst) / sr;
+                        if (turboPh > 1f) turboPh -= 1f;
+                        hybridFx += Mathf.Sin(turboPh * twoPi) * 0.075f * bst;
+                    }
+                    if (wg > 0.01f)
+                    {
+                        wgPh += 28f / sr;
+                        if (wgPh > 1f) wgPh -= 1f;
+                        float flutter = 0.5f + 0.5f * Mathf.Sin(wgPh * twoPi);
+                        hybridFx += Noise() * flutter * wg * 0.14f;
+                    }
+                    if (mk > 0.05f)
+                    {
+                        mgukPh += (820f + 2300f * (fh / 650f)) / sr;
+                        if (mgukPh > 1f) mgukPh -= 1f;
+                        hybridFx += Mathf.Sin(mgukPh * twoPi) * 0.032f * mk;
+                    }
+                }
+
+                // Automatic level control for punchy consistency across RPM range
+                float mono = sA + sB;
+                rms += 0.0006f * (mono * mono - rms);
+                float target = 0.42f / Mathf.Sqrt(Mathf.Max(rms, 0.0005f));
+                agc += 0.001f * (Mathf.Clamp(target, 0.35f, 2.6f) - agc);
+
+                eL = ((sA * 0.60f + sB * 0.40f) * agc + pop + hybridFx) * g;
+                delay[delayPos] = ((sB * 0.60f + sA * 0.40f) * agc + pop + hybridFx) * g;
+                eR = delay[(delayPos - delaySamples + delay.Length) % delay.Length];
+                delayPos = (delayPos + 1) % delay.Length;
             }
 
-            // Automatic level control: keeps the engine at a steady, comfortable loudness across the rev range
-            float mono = sA + sB;
-            rms += 0.0005f * (mono * mono - rms);
-            float target = 0.35f / Mathf.Sqrt(Mathf.Max(rms, 0.0004f));
-            agc += 0.0008f * (Mathf.Clamp(target, 0.3f, 3f) - agc);
-            float eL = (sA * 0.6f + sB * 0.4f) * agc * g + (pop + turbo) * g;
-            delay[delayPos] = (sB * 0.6f + sA * 0.4f) * agc * g + (pop + turbo) * g;
-            float eR = delay[(delayPos - delaySamples + delay.Length) % delay.Length];
-            delayPos = (delayPos + 1) % delay.Length;
+            // Kerb rumble
+            float kerbS = 0f;
+            if (kLvl > 0.01f)
+            {
+                kerbPh += kHz / sr;
+                if (kerbPh >= 1.0) kerbPh -= 1.0;
+                kerbS = (Mathf.Sin((float)kerbPh * twoPi) * 0.7f + Mathf.Sin((float)kerbPh * twoPi * 2f) * 0.3f) * kLvl * 0.24f;
+            }
 
-            // Wind: low-passed noise
+            // Wind
             windLp += aw * (Noise() - windLp);
-            float windS = windLp * wd * 1.5f;
+            float windS = windLp * wd * 1.4f;
 
-            // Tyre squeal: only when the tyres really slide
+            // Tyre squeal
             float squealS = 0f;
             if (sq > 0.01f)
             {
-                sqLfo += 4.0 / sr; phSq += sqInc * (1.0 + 0.03 * System.Math.Sin(sqLfo * 6.2832)); if (phSq > 1.0) phSq -= 1.0;
+                sqLfo += 4.0 / sr;
+                sqPh += sqInc * (1.0 + 0.03 * System.Math.Sin(sqLfo * 6.2832));
+                if (sqPh > 1.0) sqPh -= 1.0;
                 sqBp1 += 0.25f * (Noise() - sqBp1);
                 sqBp2 += 0.25f * (sqBp1 - sqBp2);
-                squealS = (Mathf.Sin((float)phSq * twoPi) * 0.35f + (sqBp1 - sqBp2) * 1.2f) * sq * volume * 0.25f;
+                squealS = (Mathf.Sin((float)sqPh * twoPi) * 0.35f + (sqBp1 - sqBp2) * 1.2f) * sq * volume * 0.22f;
             }
 
-            float common = windS + squealS;
+            float common = windS + squealS + kerbS;
             if (channels >= 2)
             {
-                data[i] = eL * 0.55f + common;
-                data[i + 1] = eR * 0.55f + common;
-                for (int c = 2; c < channels; c++) data[i + c] = (eL + eR) * 0.27f + common;
+                float lOut = eL * 0.72f + common;
+                float rOut = eR * 0.72f + common;
+                data[i] = float.IsFinite(lOut) ? Mathf.Clamp(lOut, -0.95f, 0.95f) : 0f;
+                data[i + 1] = float.IsFinite(rOut) ? Mathf.Clamp(rOut, -0.95f, 0.95f) : 0f;
+                for (int c = 2; c < channels; c++)
+                {
+                    float cOut = (eL + eR) * 0.36f + common;
+                    data[i + c] = float.IsFinite(cOut) ? Mathf.Clamp(cOut, -0.95f, 0.95f) : 0f;
+                }
             }
-            else data[i] = (eL + eR) * 0.3f + common;
+            else
+            {
+                float mOut = (eL + eR) * 0.38f + common;
+                data[i] = float.IsFinite(mOut) ? Mathf.Clamp(mOut, -0.95f, 0.95f) : 0f;
+            }
         }
+    }
+
+    // ---------- Self-test for CI / batchmode build verification ----------
+
+    public static bool RunAudioSelfTest(out string report)
+    {
+        var sb = new System.Text.StringBuilder();
+        bool allPass = true;
+        int prevSetting = GameSession.Settings.engineSound;
+
+        var temp = new GameObject("AudioSelfTestTemp") { hideFlags = HideFlags.HideAndDontSave };
+        try
+        {
+            var src = temp.AddComponent<AudioSource>();
+            src.playOnAwake = false;
+            var ea = temp.AddComponent<EngineAudio>();
+
+            for (int p = 0; p < Profiles.Length; p++)
+            {
+                ea.initialized = false;
+                GameSession.Settings.engineSound = p;
+                ea.EnsureInitialized();
+                ea.sampleRate = 48000;
+                ea.volume = 0.75f;
+                ea.muteSynthEngine = false;
+                ea.rms = 0.06f;
+                ea.agc = 1f;
+                ea.pulseA = ea.pulseB = 0f;
+
+                (float idleRms, float idlePeak, bool idleFinite) = MeasureBuffer(ea, 4500f, 0.08f, 0.42f);
+                (float loadRms, float loadPeak, bool loadFinite) = MeasureBuffer(ea, 12000f, 1.0f, 0.72f);
+
+                bool ok = idleFinite && loadFinite
+                       && idleRms >= 0.04f && idleRms <= 0.55f
+                       && loadRms >= 0.12f && loadRms <= 0.75f
+                       && loadRms > idleRms
+                       && idlePeak <= 0.96f && loadPeak <= 0.96f;
+                if (!ok) allPass = false;
+                sb.AppendLine($"  [{(ok ? "PASS" : "FAIL")}] {EngineNames[p]}: idleRMS={idleRms:0.000} (peak={idlePeak:0.000}), fullLoadRMS={loadRms:0.000} (peak={loadPeak:0.000}), finite={idleFinite && loadFinite}");
+            }
+        }
+        finally
+        {
+            GameSession.Settings.engineSound = prevSetting;
+            DestroyImmediate(temp);
+        }
+
+        report = sb.ToString();
+        return allPass;
+    }
+
+    static (float rms, float peak, bool allFinite) MeasureBuffer(EngineAudio ea, float rpm, float ld, float gain)
+    {
+        float chz = rpm / 60f;
+        ea.crankHz = chz;
+        ea.firingHz = chz * ea.prof.cylinders * 0.5f;
+        ea.load = ld;
+        ea.engineGain = gain;
+        ea.limiterCut = 0f;
+        ea.shiftCut = 0f;
+        ea.wind = 0f;
+        ea.squeal = 0f;
+        ea.kerbLevel = 0f;
+        ea.boost = ea.prof.turbo ? ld * 0.9f : 0f;
+        ea.mguk = ea.prof.turbo ? ld * 0.8f : 0f;
+        ea.wastegate = 0f;
+
+        // Warm-up 1024 stereo frames then measure 2048 stereo frames
+        var warm = new float[1024 * 2];
+        ea.Synthesize(warm, 2);
+
+        var buf = new float[2048 * 2];
+        ea.Synthesize(buf, 2);
+        double sumSq = 0.0;
+        float peak = 0f;
+        bool finite = true;
+        for (int i = 0; i < buf.Length; i++)
+        {
+            float v = buf[i];
+            if (!float.IsFinite(v)) { finite = false; continue; }
+            float av = Mathf.Abs(v);
+            if (av > peak) peak = av;
+            sumSq += v * v;
+        }
+        float rms = (float)System.Math.Sqrt(sumSq / buf.Length);
+        return (rms, peak, finite);
     }
 
     // ---------- One-shot clips, synthesised once ----------
@@ -252,18 +662,16 @@ public class EngineAudio : MonoBehaviour
     static void BuildClips()
     {
         if (clunk != null) return;
-        int sr = AudioSettings.outputSampleRate;
+        int sr = AudioSettings.outputSampleRate > 1000 ? AudioSettings.outputSampleRate : 48000;
         var rnd = new System.Random(5);
         float N() => (float)rnd.NextDouble() * 2f - 1f;
 
-        // Seamless-shift gearbox: a short dry knock
-        clunk = Make("ShiftClunk", sr, 0.07f, (t, n) => (Mathf.Sin(t * 2f * Mathf.PI * 160f) * 0.6f + N() * 0.3f) * Mathf.Exp(-t * 70f));
-        // Crash: low thump with a carbon crack and debris noise
+        clunk = Make("ShiftClunk", sr, 0.075f, (t, n) =>
+            (Mathf.Sin(t * 2f * Mathf.PI * 175f) * 0.65f + N() * 0.35f) * Mathf.Exp(-t * 68f));
         thud = Make("CrashThud", sr, 0.8f, (t, n) =>
-            Mathf.Sin(t * 2f * Mathf.PI * (70f - 30f * t)) * Mathf.Exp(-t * 7f) * 0.9f
+            Mathf.Sin(t * 2f * Mathf.PI * (72f - 32f * t)) * Mathf.Exp(-t * 7f) * 0.9f
           + N() * Mathf.Exp(-t * 30f) * 0.6f
           + N() * Mathf.Exp(-t * 6f) * 0.2f);
-        // Team radio: squelch, two short beeps, then a little channel hiss
         radio = Make("RadioBeep", sr, 0.55f, (t, n) =>
         {
             float squelch = t < 0.06f ? N() * 0.6f * (1f - t / 0.06f) : 0f;
@@ -271,7 +679,6 @@ public class EngineAudio : MonoBehaviour
             float hiss = t > 0.3f ? N() * 0.08f * (1f - (t - 0.3f) / 0.25f) : 0f;
             return squelch + beep + hiss;
         });
-        // Pit wheel guns: four rattling pneumatic bursts (off), a pause, four more (on)
         gun = Make("WheelGun", sr, 2.2f, (t, n) =>
         {
             bool on = (t < 0.3f) || (t > 1.6f && t < 1.9f);

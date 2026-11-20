@@ -34,7 +34,10 @@ public static class MenuSceneBuilder
         camGo.transform.LookAt(new Vector3(-2.2f, 0.5f, 0f));
 
         RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
-        RenderSettings.ambientLight = new Color(0.12f, 0.13f, 0.16f);
+        RenderSettings.ambientLight = new Color(0.32f, 0.35f, 0.40f);
+        RenderSettings.defaultReflectionMode = UnityEngine.Rendering.DefaultReflectionMode.Custom;
+        RenderSettings.customReflectionTexture = CircuitBuilder.GetOrBuildSkyReflectionCube(new Vector3(0.4f, 0.8f, -0.4f).normalized);
+        RenderSettings.reflectionIntensity = 1.35f;
         RenderSettings.fog = true;
         RenderSettings.fogMode = FogMode.Linear;
         RenderSettings.fogColor = cam.backgroundColor;
@@ -44,12 +47,13 @@ public static class MenuSceneBuilder
 
         var key = new GameObject("KeyLight").AddComponent<Light>();
         key.type = LightType.Directional;
-        key.intensity = 0.7f;
+        key.intensity = 1.6f;
         key.transform.rotation = Quaternion.Euler(40f, 25f, 0f);
         key.shadows = LightShadows.Soft;
-        Spot("SpotTop", new Vector3(0, 7f, 0), Vector3.zero, 70f, 60f, new Color(1f, 0.97f, 0.92f));
-        Spot("SpotFront", new Vector3(-3f, 4f, -6f), new Vector3(0, 0.4f, 0), 45f, 35f, Color.white);
-        Spot("RimRed", new Vector3(4f, 2.5f, 5f), new Vector3(0, 0.5f, 0), 25f, 45f, new Color(1f, 0.2f, 0.2f));
+        Spot("SpotTop", new Vector3(0, 7f, 0), Vector3.zero, 70f, 110f, new Color(1f, 0.97f, 0.92f));
+        Spot("SpotFront", new Vector3(-3f, 4f, -6f), new Vector3(0, 0.4f, 0), 50f, 75f, Color.white);
+        Spot("SpotFill", new Vector3(5.5f, 3.2f, -3.5f), new Vector3(0, 0.45f, 0), 55f, 50f, new Color(0.85f, 0.92f, 1f));
+        Spot("RimRed", new Vector3(4f, 2.5f, 5f), new Vector3(0, 0.5f, 0), 30f, 45f, new Color(1f, 0.25f, 0.25f));
 
         var floorMat = Mat("Showroom_Floor", new Color(0.05f, 0.055f, 0.07f), 0.3f, 0.85f);
         var discMat = Mat("Showroom_Turntable", new Color(0.12f, 0.12f, 0.14f), 0.8f, 0.9f);

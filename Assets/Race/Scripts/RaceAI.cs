@@ -102,10 +102,11 @@ public class RaceAI : MonoBehaviour
     public void ApplyImpact(Vector3 dv, Vector3 point)
     {
         Speed = Mathf.Max(0f, Speed + Vector3.Dot(dv, transform.forward));
-        lateralVel += Vector3.Dot(dv, transform.right);
+        lateralVel = Mathf.Clamp(lateralVel + Vector3.Dot(dv, transform.right), -12f, 12f);
         Vector3 lever = point - transform.position; lever.y = 0;
-        wobbleVel += Mathf.Clamp(Vector3.Cross(lever, dv).y * 9f, -200f, 200f);
-        recoverTimer = Mathf.Clamp(dv.magnitude * 0.25f, 0.5f, 2.5f);
+        wobbleVel = Mathf.Clamp(wobbleVel + Vector3.Cross(lever, dv).y * 3.5f, -65f, 65f);
+        wobble = Mathf.Clamp(wobble, -18f, 18f);
+        recoverTimer = Mathf.Clamp(dv.magnitude * 0.18f, 0.4f, 1.6f);
     }
 
     float GripFactor => manager != null && manager.HasPitLane ? Tyres.GripFactor(compound, tyreWear) : 1f;
@@ -225,12 +226,13 @@ public class RaceAI : MonoBehaviour
 
                 case PitState.InLane:
                 {
-                    laneTarget = m.PitLat(d);
-                    laneSpeed = 6f;
-                    laneLimit = m.PitLimit;
                     float toBox = Mathf.Repeat(m.BoxDistance(team) - d, track.length);
                     if (toBox > track.length / 2f) toBox = 0f;
-                    desired = Mathf.Min(m.pitSpeed, Mathf.Sqrt(2f * 10f * Mathf.Max(0f, toBox - 0.2f)));
+                    float boxBlend = toBox < 18f ? Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(18f, 3f, toBox)) : 0f;
+                    laneTarget = Mathf.Lerp(m.PitLat(d), m.BoxLat(team), boxBlend);
+                    laneSpeed = 8f;
+                    laneLimit = m.PitLimit;
+                    desired = Mathf.Min(m.pitSpeed, Mathf.Sqrt(2f * 10f * Mathf.Max(0f, toBox - 0.15f)));
                     desired = Mathf.Min(desired, FollowLimit(true));
                     if (toBox < 0.6f && Speed < 1.5f)
                     {
@@ -260,29 +262,36 @@ public class RaceAI : MonoBehaviour
                 case PitState.Leaving:
                 {
                     laneLimit = m.PitLimit;
+                    float fromBox = Mathf.Repeat(d - m.BoxDistance(team), track.length);
+                    float outBlend = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0f, 16f, fromBox));
+                    laneTarget = Mathf.Lerp(m.BoxLat(team), m.PitLat(d), outBlend);
+                    laneSpeed = 8f;
                     desired = Mathf.Min(m.pitSpeed, FollowLimit(true));
-                    if (RaceManager.InWindow(d, m.pitExitStart, m.pitExitEnd + 40f, track.length))
+                    // Strictly stay in pit fast lane until AFTER pitExitEnd before merging onto circuit!
+                    bool inPitChannel = RaceManager.InWindow(d, m.pitEntryStart, m.pitExitEnd, track.length);
+                    if (!inPitChannel && RaceManager.InWindow(d, m.pitExitEnd, m.pitExitEnd + 80f, track.length))
                     {
                         laneTarget = (narrow ? 2.6f : 4.5f) * m.PitSide;
-                        laneSpeed = 5f;
-                        if (!RaceManager.InWindow(d, m.pitExitStart, m.pitExitEnd, track.length)) desired = RacingSpeed(skill, track);
+                        laneSpeed = 4.5f;
+                        desired = RacingSpeed(skill, track);
                     }
-                    if (lane * m.PitSide < (narrow ? 3.2f : 5f) && !RaceManager.InWindow(d, m.pitEntryStart, m.pitExitStart, track.length)) Pit = PitState.None;
+                    if (!inPitChannel && lane * m.PitSide < (narrow ? 3.2f : 5f) && !RaceManager.InWindow(d, m.pitEntryStart, m.pitExitEnd, track.length))
+                        Pit = PitState.None;
                     break;
                 }
             }
         }
 
-        // After being hit: knocked sideways and twisted, then the driver gathers it up and rejoins
+        // After being hit: critically damped wobble decay without elastic bounce
         if (recoverTimer > 0f)
         {
             recoverTimer -= dt;
             desired = Mathf.Min(desired, 14f);
         }
         lane = Mathf.Clamp(lane + lateralVel * dt, -laneLimit, laneLimit);
-        lateralVel = Mathf.MoveTowards(lateralVel, 0f, 10f * dt);
-        wobbleVel += (-wobble * 30f - wobbleVel * 6f) * dt;
-        wobble += wobbleVel * dt;
+        lateralVel = Mathf.MoveTowards(lateralVel, 0f, 12f * dt);
+        wobbleVel += (-wobble * 24f - wobbleVel * 11f) * dt;
+        wobble = Mathf.Clamp(wobble + wobbleVel * dt, -18f, 18f);
 
         float accel = (acceleration * (1f - 0.7f * Mathf.Pow(Mathf.Clamp01(Speed / Mathf.Max(maxSpeed, 1f)), 2f)) + 0.5f) * (inSlipstream || drsOpen ? 1.08f : 1f);
         float brake = braking + aeroBraking * Speed * Speed;

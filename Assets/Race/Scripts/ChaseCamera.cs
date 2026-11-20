@@ -12,6 +12,7 @@ using UnityEngine.InputSystem;
 public class ChaseCamera : MonoBehaviour
 {
     public enum View { Chase, TVPod, Cockpit, FarChase }
+    public static View ActiveView { get; private set; }
 
     public Transform target;
     public View view = View.Chase;
@@ -19,8 +20,9 @@ public class ChaseCamera : MonoBehaviour
     public float height = 1.45f;
     public float lookAhead = 3.5f;
     public float followSharpness = 7f;
-    public Vector3 cockpitOffset = new Vector3(0, 0.95f, 0.1f);    // local to the car
-    public Vector3 tvPodOffset = new Vector3(0, 1.32f, -0.35f);    // local to the car
+    public Vector3 cockpitOffset = new Vector3(0, 0.80f, -0.06f);   // local to the car
+    public float cockpitPitch = 4.5f;                               // gentle downward angle to frame wheel + halo
+    public Vector3 tvPodOffset = new Vector3(0, 1.32f, -0.35f);     // local to the car
     public float tvPodPitch = 8f;                                   // degrees looking down
     public float baseFov = 62f;                                     // settings: field of view at low speed
     public bool shake = true;
@@ -28,13 +30,41 @@ public class ChaseCamera : MonoBehaviour
     Camera cam;
     VehicleBase car;
     Vector3 heading, smoothPos, vel;
-    bool init;
+    bool init, driverHidden;
+    float smoothYaw;
+    Renderer[] driverRenderers;
     static readonly RaycastHit[] hits = new RaycastHit[8];
 
     void Start()
     {
         cam = GetComponent<Camera>();
-        if (target != null) car = target.GetComponent<VehicleBase>();
+        if (target != null)
+        {
+            car = target.GetComponent<VehicleBase>();
+            var list = new System.Collections.Generic.List<Renderer>();
+            foreach (var r in target.GetComponentsInChildren<Renderer>(true))
+                if (r.name.StartsWith("F1_Cockpit_Driver")) list.Add(r);
+            driverRenderers = list.ToArray();
+        }
+        ActiveView = view;
+        SyncDriverVisibility();
+    }
+
+    void OnDisable()
+    {
+        if (driverRenderers != null)
+            foreach (var r in driverRenderers) if (r != null) r.enabled = true;
+        driverHidden = false;
+    }
+
+    void SyncDriverVisibility()
+    {
+        bool hide = view == View.Cockpit;
+        if (driverHidden == hide && hide == false) return;
+        driverHidden = hide;
+        if (driverRenderers == null) return;
+        foreach (var r in driverRenderers)
+            if (r != null) r.enabled = !hide;
     }
 
     void LateUpdate()
@@ -46,6 +76,8 @@ public class ChaseCamera : MonoBehaviour
         bool cycle = Input.GetKeyDown(KeyCode.C);
 #endif
         if (cycle) { view = (View)(((int)view + 1) % 4); init = false; }
+        ActiveView = view;
+        SyncDriverVisibility();
 
         float dt = Mathf.Max(Time.deltaTime, 1e-4f);
         Vector3 fwd = target.forward; fwd.y = 0; fwd.Normalize();
@@ -61,10 +93,16 @@ public class ChaseCamera : MonoBehaviour
                 SetFov(baseFov + 4f + 14f * sp);
                 break;
             case View.Cockpit:
+            {
                 transform.position = target.TransformPoint(cockpitOffset);
-                transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.LookRotation(target.forward, target.up), 1f - Mathf.Exp(-20f * dt));
-                SetFov(baseFov + 6f + 12f * sp);
+                float targetYaw = car is F1Car f1s ? Mathf.Clamp(f1s.LateralG * 1.4f, -3.5f, 3.5f) : 0f;
+                smoothYaw = Mathf.Lerp(smoothYaw, targetYaw, 1f - Mathf.Exp(-8f * dt));
+                Vector3 stabUp = Vector3.Lerp(target.up, Vector3.up, 0.35f).normalized;
+                Quaternion desiredRot = Quaternion.LookRotation(target.forward, stabUp) * Quaternion.Euler(cockpitPitch, smoothYaw, 0f);
+                transform.rotation = Quaternion.Slerp(transform.rotation, desiredRot, 1f - Mathf.Exp(-24f * dt));
+                SetFov(baseFov + 4f + 10f * sp);
                 break;
+            }
             default:
             {
                 bool far = view == View.FarChase;
@@ -105,15 +143,16 @@ public class ChaseCamera : MonoBehaviour
             float kAmp = Mathf.Clamp01(kmh / 180f) * (view == View.Chase || view == View.FarChase ? 0.012f : 0.018f);
             transform.position += new Vector3(0f, Mathf.Sin(Time.time * 65f) * kAmp, 0f);
         }
-        // Impact shake, fading out over about half a second
+        // Smooth critically damped directional jolt on impact (no random buzz)
         if (shake && car != null && car.LastImpactTime > 0f)
         {
             float age = Time.time - car.LastImpactTime;
-            float amp = Mathf.Clamp01(car.LastImpactStrength / 20f) * 0.22f * Mathf.Exp(-age * 6f);
-            if (amp > 0.002f)
+            if (age >= 0f && age < 0.7f)
             {
-                transform.position += Random.insideUnitSphere * amp;
-                transform.rotation *= Quaternion.Euler(Random.Range(-1f, 1f) * amp * 25f, Random.Range(-1f, 1f) * amp * 25f, 0);
+                float env = Mathf.Clamp01(car.LastImpactStrength / 24f) * Mathf.Exp(-age * 9f);
+                float jolt = Mathf.Sin(age * 36f) * env;
+                transform.position += transform.right * (jolt * 0.038f) + transform.up * (Mathf.Abs(jolt) * 0.018f);
+                transform.rotation *= Quaternion.Euler(jolt * 0.9f, 0f, -jolt * 1.2f);
             }
         }
     }

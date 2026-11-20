@@ -56,7 +56,10 @@ public static class F1PhysicsTest
             Vector3 p0 = carGo.transform.position;
             float v0 = car.SpeedKmh, bt = 0;
             while (car.SpeedKmh > 1f && bt < 20f) { Step(car, 0, 1, 0); bt += Dt; }
-            log.AppendLine($"  Braking {v0:0}->0 km/h: {Vector3.Distance(p0, carGo.transform.position):0} m in {bt:0.00}s");
+            float brakeDist = Vector3.Distance(p0, carGo.transform.position);
+            bool brakeOk = brakeDist < 85f && bt < 2.65f && carGo.transform.up.y >= 0.99f;
+            log.AppendLine($"  [{(brakeOk ? "PASS" : "FAIL")}] Braking {v0:0}->0 km/h: {brakeDist:0.0} m in {bt:0.00}s (up.y {carGo.transform.up.y:0.000})");
+            if (!brakeOk) Debug.LogError($"F1PhysicsTest braking threshold missed: {brakeDist:0.0}m in {bt:0.00}s");
 
             // 3. Steady cornering at fixed speeds: hold speed with throttle, full steer
             foreach (float target in new[] { 15f, 30f, 55f })
@@ -92,10 +95,11 @@ public static class F1PhysicsTest
             while (car.SpeedKmh > 1f && tb < 20f) { Step(car, 0, 1, 0); tb += Dt; }
             log.AppendLine($"  No-ABS braking {vBefore:0}->0: {Vector3.Distance(pB, carGo.transform.position):0} m, stable up.y {carGo.transform.up.y:0.000}");
 
-            // 5. Crashes into a wall: head-on and glancing. Measure lift-off and bounce-back.
+            // 5. Crashes into a wall: head-on and glancing at 160 km/h + sustained throttle push (no vibration/bounce) + wing break & repair.
             car.abs = true;
             foreach (float angle in new[] { 0f, 25f })
             {
+                car.RepairFrontWing();
                 var wall = GameObject.CreatePrimitive(PrimitiveType.Cube);
                 wall.name = "TestWall";
                 wall.transform.position = new Vector3(0, -4998.5f, 9120f);
@@ -105,18 +109,35 @@ public static class F1PhysicsTest
                 car.Teleport(new Vector3(0, -4999.95f, 9000f), Quaternion.Euler(0, angle, 0));
                 Physics.SyncTransforms();
                 Run(car, 1f, 0, 0, 0, null);
-                // accelerate to ~150 km/h, then coast into the wall
                 float t2 = 0;
-                while (car.SpeedKmh < 150f && t2 < 15f) { Step(car, 1, 0, 0); t2 += Dt; }
+                while (car.SpeedKmh < 160f && t2 < 15f) { Step(car, 1, 0, 0); t2 += Dt; }
                 float baseY = carGo.transform.position.y, maxRise = 0f, minVz = 0f, maxTilt = 0f;
-                for (float tt = 0; tt < 6f; tt += Dt)
+                for (float tt = 0; tt < 4.5f; tt += Dt)
                 {
                     Step(car, 0, 0, 0);
                     maxRise = Mathf.Max(maxRise, carGo.transform.position.y - baseY);
                     minVz = Mathf.Min(minVz, rb.linearVelocity.z);
                     maxTilt = Mathf.Max(maxTilt, Vector3.Angle(carGo.transform.up, Vector3.up));
                 }
-                log.AppendLine($"  Wall hit at {angle}° from 150 km/h: reached wall {carGo.transform.position.z > 9110f}, max lift {maxRise:0.00} m, max bounce-back {-minVz:0.0} m/s, max tilt {maxTilt:0.0}°, final speed {car.SpeedKmh:0} km/h, z {carGo.transform.position.z:0}");
+                // Hold full throttle against wall for 1.5s and measure wall-normal vibration RMS
+                double sumSq = 0.0;
+                int vibN = 0;
+                Vector3 wallFwd = wall.transform.forward;
+                for (float tt = 0; tt < 1.5f; tt += Dt)
+                {
+                    Step(car, 1f, 0, 0);
+                    maxRise = Mathf.Max(maxRise, carGo.transform.position.y - baseY);
+                    float vn = Vector3.Dot(rb.linearVelocity, wallFwd);
+                    sumSq += vn * vn;
+                    vibN++;
+                }
+                float vibRms = Mathf.Sqrt((float)(sumSq / Mathf.Max(1, vibN)));
+                float maxBounce = -minVz;
+                bool wingOk = angle > 0.1f || car.FrontWingLost;
+                if (angle == 0f) { car.RepairFrontWing(); wingOk &= !car.FrontWingLost; }
+                bool crashOk = carGo.transform.position.z > 9110f && maxRise < 0.14f && maxBounce < 0.85f && maxTilt < 8.5f && vibRms < 0.35f && wingOk;
+                log.AppendLine($"  [{(crashOk ? "PASS" : "FAIL")}] Wall hit {angle}° @ 160 km/h: maxRise={maxRise:0.00}m, bounce={maxBounce:0.00}m/s, tilt={maxTilt:0.0}°, wallNormRMS={vibRms:0.000}m/s, wingBreakRepairOK={wingOk}");
+                if (!crashOk) Debug.LogError($"F1PhysicsTest crash instability at {angle}°: rise={maxRise:0.00} bounce={maxBounce:0.00} tilt={maxTilt:0.0} vib={vibRms:0.000} wingOk={wingOk}");
                 Object.DestroyImmediate(wall);
             }
 

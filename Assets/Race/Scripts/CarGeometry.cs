@@ -8,4 +8,5 @@ public class CarGeometry : MonoBehaviour
     public float frontTrack = 0.81f, rearTrack = 0.76f;
     public float tyreRadius = 0.36f;
     public float headZ = -0.2f, headY = 0.95f;     // driver helmet (camera placement)
+    public Vector3 steeringWheelLocalPos = new Vector3(0f, 0.648f, 0.56f);
 }

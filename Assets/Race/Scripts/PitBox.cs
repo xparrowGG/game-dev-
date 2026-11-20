@@ -1,44 +1,178 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-// A team's pit box with a full stop crew (built at race start from primitives in team colours):
-// front and rear jack men, a wheel gunner, a tyre-off and a tyre-on man at each corner, two side
-// stabilisers and the release light. Sequence of a stop (scaled to the service time):
-//   car arrives -> rear jack in, both jacks lift -> guns loosen -> old tyres pulled off and carried out ->
-//   new tyres pushed on -> guns tighten -> jacks drop -> light goes green, car released -> crew back to the garage.
+// A team's pit box positioned directly in front of its garage bay:
+//   - 16 rigged F1 Pit Crew mechanics (Front/Rear Jack with Prop_PitJack, 4 Wheel Gunners with Prop_WheelGun,
+//     4 Tyre-Off, 4 Tyre-On, 2 Side Stabilisers) + 2 Front-Wing Replacement mechanics (carrying Prop_FrontWing_Spare)
+//   - 2 rigged Race Engineers (team-colored pit wall attire, headsets, telemetry tablets)
+//   - 2 rigged Garage Workers (hi-vis safety vests, headsets, guiding incoming car)
+// Animates skeletal bones procedurally (running stride, deep wheel-gun crouch/kneel, tyre lift, jack lever, front wing bolt-on).
 public class PitBox : MonoBehaviour
 {
     public int team;
-    public float trackDistance;          // where the car stops, along the track
+    public int liveryIndex;
+    public float trackDistance;
     public Renderer releaseLight;
     public Material lightRed, lightGreen, lightOff;
 
-    enum Role { FrontJack, RearJack, Gunner, TyreOff, TyreOn, Stabiliser }
+    enum Role { FrontJack, RearJack, Gunner, TyreOff, TyreOn, Stabiliser, WingCrew, Engineer, Worker }
+
+    sealed class CrewRig
+    {
+        public Transform hips, torso, head;
+        public Transform upperArmL, lowerArmL, fistL;
+        public Transform upperArmR, lowerArmR, fistR;
+        public Transform upperLegL, lowerLegL;
+        public Transform upperLegR, lowerLegR;
+
+        Quaternion rTorso, rHead;
+        Quaternion rUAL, rLAL, rUAR, rLAR;
+        Quaternion rULL, rLLL, rULR, rLLR;
+        Vector3 rHipsPos;
+        Vector3 hipsUpInParent = Vector3.up;
+        Vector3 dirUAL, dirLAL, dirUAR, dirLAR;
+        Vector3 dirULL, dirLLL, dirULR, dirLLR;
+
+        public bool valid;
+
+        public void Bind(Transform root)
+        {
+            hips = FindBone(root, "Body") ?? FindBone(root, "Hips");
+            torso = FindBone(root, "Abdomen") ?? FindBone(root, "Torso");
+            head = FindBone(root, "Head");
+            upperArmL = FindBone(root, "UpperArm.L"); lowerArmL = FindBone(root, "LowerArm.L"); fistL = FindBone(root, "Fist.L");
+            upperArmR = FindBone(root, "UpperArm.R"); lowerArmR = FindBone(root, "LowerArm.R"); fistR = FindBone(root, "Fist.R");
+            upperLegL = FindBone(root, "UpperLeg.L"); lowerLegL = FindBone(root, "LowerLeg.L");
+            upperLegR = FindBone(root, "UpperLeg.R"); lowerLegR = FindBone(root, "LowerLeg.R");
+
+            if (hips != null)
+            {
+                rHipsPos = hips.localPosition;
+                hipsUpInParent = hips.parent != null ? hips.parent.InverseTransformVector(root.up) : Vector3.up;
+            }
+            if (torso != null) rTorso = torso.localRotation;
+            if (head != null) rHead = head.localRotation;
+
+            CaptureLimb(root, upperArmL, lowerArmL, Vector3.left, out rUAL, out dirUAL);
+            CaptureLimb(root, lowerArmL, fistL, Vector3.left, out rLAL, out dirLAL);
+            CaptureLimb(root, upperArmR, lowerArmR, Vector3.right, out rUAR, out dirUAR);
+            CaptureLimb(root, lowerArmR, fistR, Vector3.right, out rLAR, out dirLAR);
+            CaptureLimb(root, upperLegL, lowerLegL, Vector3.down, out rULL, out dirULL);
+            CaptureLimb(root, lowerLegL, null, Vector3.down, out rLLL, out dirLLL);
+            CaptureLimb(root, upperLegR, lowerLegR, Vector3.down, out rULR, out dirULR);
+            CaptureLimb(root, lowerLegR, null, Vector3.down, out rLLR, out dirLLR);
+
+            valid = upperArmL != null && upperArmR != null;
+        }
+
+        static Transform FindBone(Transform root, string exact)
+        {
+            foreach (var t in root.GetComponentsInChildren<Transform>(true))
+                if (t.name == exact) return t;
+            return null;
+        }
+
+        static void CaptureLimb(Transform charRoot, Transform bone, Transform child, Vector3 fallbackRootDir, out Quaternion restRot, out Vector3 restDirRoot)
+        {
+            restRot = bone != null ? bone.localRotation : Quaternion.identity;
+            restDirRoot = fallbackRootDir;
+            if (bone == null || bone.parent == null || charRoot == null) return;
+            if (child != null)
+            {
+                Vector3 v = charRoot.InverseTransformPoint(child.position) - charRoot.InverseTransformPoint(bone.position);
+                if (v.sqrMagnitude > 1e-6f) restDirRoot = v.normalized;
+            }
+        }
+
+        static void AimBone(Transform bone, Quaternion restRot, Vector3 restDirChar, Vector3 desiredDirChar, Transform charRoot)
+        {
+            if (bone == null || bone.parent == null || desiredDirChar.sqrMagnitude < 1e-5f) return;
+            desiredDirChar.Normalize();
+            Vector3 dFrom = charRoot.TransformDirection(restDirChar);
+            Vector3 dTo = charRoot.TransformDirection(desiredDirChar);
+            Quaternion worldDelta = Quaternion.FromToRotation(dFrom, dTo);
+            Quaternion restWorld = bone.parent.rotation * restRot;
+            bone.rotation = worldDelta * restWorld;
+        }
+
+        public void ApplyPose(Transform charRoot, float kneel, float runCycle, float runWeight, Vector3 armTargetDirL, Vector3 armTargetDirR, float torsoLeanDeg, float headYawDeg = 0f, float headPitchDeg = 0f)
+        {
+            if (!valid) return;
+            kneel = Mathf.Clamp01(kneel);
+            runWeight = Mathf.Clamp01(runWeight);
+
+            if (hips != null)
+                hips.localPosition = rHipsPos + hipsUpInParent * (-0.34f * kneel + Mathf.Abs(Mathf.Sin(runCycle)) * 0.04f * runWeight);
+            if (torso != null && torso.parent != null)
+                torso.rotation = Quaternion.AngleAxis(torsoLeanDeg, charRoot.right) * (torso.parent.rotation * rTorso);
+            if (head != null && head.parent != null)
+                head.rotation = Quaternion.AngleAxis(headYawDeg, charRoot.up) * Quaternion.AngleAxis(headPitchDeg, charRoot.right) * (head.parent.rotation * rHead);
+
+            // Legs: blend between running stride, standing stance, and deep athletic kneel
+            float strideL = Mathf.Sin(runCycle) * 0.65f * runWeight;
+            float strideR = -strideL;
+            Vector3 kneeFwd = new Vector3(0f, -0.45f, 0.90f);
+            Vector3 shinBack = new Vector3(0f, -0.78f, -0.62f);
+
+            Vector3 ulL = Vector3.Lerp(new Vector3(-0.08f, -1f, strideL), kneeFwd + new Vector3(-0.22f, 0f, 0f), kneel);
+            Vector3 llL = Vector3.Lerp(new Vector3(0f, -1f, Mathf.Max(0f, -strideL) * 0.8f), shinBack, kneel);
+            Vector3 ulR = Vector3.Lerp(new Vector3(0.08f, -1f, strideR), kneeFwd + new Vector3(0.22f, 0f, 0f), kneel);
+            Vector3 llR = Vector3.Lerp(new Vector3(0f, -1f, Mathf.Max(0f, -strideR) * 0.8f), shinBack, kneel);
+
+            AimBone(upperLegL, rULL, dirULL, ulL, charRoot);
+            AimBone(lowerLegL, rLLL, dirLLL, llL, charRoot);
+            AimBone(upperLegR, rULR, dirULR, ulR, charRoot);
+            AimBone(lowerLegR, rLLR, dirLLR, llR, charRoot);
+
+            // Arms: never leave in T-pose! Blend run swing with role target directions in character-local space
+            Vector3 runSwingL = new Vector3(-0.22f, -0.82f, -strideL * 0.7f);
+            Vector3 runSwingR = new Vector3(0.22f, -0.82f, -strideR * 0.7f);
+            Vector3 dArmL = Vector3.Lerp(armTargetDirL, runSwingL, runWeight * (1f - kneel));
+            Vector3 dArmR = Vector3.Lerp(armTargetDirR, runSwingR, runWeight * (1f - kneel));
+
+            AimBone(upperArmL, rUAL, dirUAL, dArmL, charRoot);
+            AimBone(lowerArmL, rLAL, dirLAL, Vector3.Lerp(dArmL, dArmL + Vector3.forward * 0.45f, 0.6f), charRoot);
+            AimBone(upperArmR, rUAR, dirUAR, dArmR, charRoot);
+            AimBone(lowerArmR, rLAR, dirLAR, Vector3.Lerp(dArmR, dArmR + Vector3.forward * 0.45f, 0.6f), charRoot);
+        }
+    }
+
     class Member
     {
         public Transform t, prop;
+        public CrewRig rig;
         public Role role;
-        public int corner;               // 0 FL, 1 FR, 2 RL, 3 RR
+        public int corner;               // 0 FL, 1 FR, 2 RL, 3 RR (or index for wing/eng/worker)
         public Vector3 home, ready, work, stack;
     }
+
     readonly List<Member> crew = new List<Member>();
     readonly Transform[] oldTyre = new Transform[4], newTyre = new Transform[4];
+    Transform spareWingProp;
+    bool spareWingActiveForStop;
 
     enum Phase { Garage, Ready, Service, Released }
     Phase phase = Phase.Garage;
     float timer, duration = 2.6f, readyBlend, releaseTimer;
-    static readonly Vector3[] Wheels = { new Vector3(-0.81f, 0.36f, 1.7f), new Vector3(0.81f, 0.36f, 1.7f), new Vector3(-0.76f, 0.36f, -1.7f), new Vector3(0.76f, 0.36f, -1.7f) };
+    static readonly Vector3[] Wheels =
+    {
+        new Vector3(-0.81f, 0.36f, 1.7f),
+        new Vector3(0.81f, 0.36f, 1.7f),
+        new Vector3(-0.76f, 0.36f, -1.7f),
+        new Vector3(0.76f, 0.36f, -1.7f)
+    };
 
     // ---------- Build ----------
 
-    public static PitBox Create(Transform parent, int team, Vector3 pos, Quaternion rot, float garageSide, Color primary, Color secondary)
+    public static PitBox Create(Transform parent, int team, Vector3 pos, Quaternion rot, float garageSide, Color primary, Color secondary, string teamName = "", int liveryIndex = 0)
     {
         var go = new GameObject("PitBox_" + team);
         go.transform.SetParent(parent, false);
         go.transform.SetPositionAndRotation(pos, rot);
         var box = go.AddComponent<PitBox>();
         box.team = team;
-        box.Build(garageSide, primary, secondary);
+        box.liveryIndex = liveryIndex;
+        box.Build(garageSide, primary, secondary, teamName);
         return box;
     }
 
@@ -54,7 +188,7 @@ public class PitBox : MonoBehaviour
     static Transform Part(PrimitiveType type, Transform parent, Vector3 pos, Vector3 scale, Material m, Quaternion? rot = null)
     {
         var g = GameObject.CreatePrimitive(type);
-        Destroy(g.GetComponent<Collider>());
+        if (Application.isPlaying) Destroy(g.GetComponent<Collider>()); else DestroyImmediate(g.GetComponent<Collider>());
         g.transform.SetParent(parent, false);
         g.transform.localPosition = pos;
         g.transform.localScale = scale;
@@ -65,76 +199,201 @@ public class PitBox : MonoBehaviour
         return g.transform;
     }
 
-    void Build(float side, Color primary, Color secondary)
+    void Build(float side, Color primary, Color secondary, string teamName)
     {
-        var suit = Mat(Color.Lerp(primary, Color.black, 0.15f));
-        var trim = Mat(secondary);
-        var helmet = Mat(Color.Lerp(secondary, Color.white, 0.3f), 0.8f);
+        var suitColor = Color.Lerp(primary, new Color(0.18f, 0.18f, 0.20f), 0.10f);
+        var trimColor = Color.Lerp(secondary, Color.white, 0.12f);
+        var helmetColor = Color.Lerp(primary, Color.white, 0.08f);
+        var steel = Mat(new Color(0.55f, 0.57f, 0.62f), 0.65f);
+        var gantryDark = Mat(new Color(0.10f, 0.11f, 0.13f), 0.45f);
         var rubber = Mat(new Color(0.05f, 0.05f, 0.055f), 0.25f);
-        var steel = Mat(new Color(0.55f, 0.57f, 0.6f), 0.6f);
-        float gx = side;                 // garage side: +1 right of the car, -1 left
+        float gx = side >= 0f ? 1f : -1f;   // garage apron side: +1 right of car, -1 left
+
+        var prefabMech = Resources.Load<GameObject>("F1Crew/PitCrew_Mechanic");
+        var prefabEng = Resources.Load<GameObject>("F1Crew/Race_Engineer");
+        var prefabWork = Resources.Load<GameObject>("F1Crew/Pit_Worker");
+        var prefabGun = Resources.Load<GameObject>("F1Crew/Prop_WheelGun");
+        var prefabJack = Resources.Load<GameObject>("F1Crew/Prop_PitJack");
+        var prefabWing = Resources.Load<GameObject>("F1Crew/Prop_FrontWing_Spare");
+
+        // Shared team-tinted materials cloned safely from prefab textures so all 20 crew members keep 100% textured weave!
+        void ApplyTeamTints(GameObject charInst, bool isMechanic)
+        {
+            foreach (var r in charInst.GetComponentsInChildren<Renderer>(true))
+            {
+                r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
+                if (r is SkinnedMeshRenderer smr) smr.updateWhenOffscreen = true;
+                var sm = r.sharedMaterials;
+                bool chg = false;
+                for (int i = 0; i < sm.Length; i++)
+                {
+                    var m = sm[i];
+                    if (m == null) continue;
+                    string mn = m.name;
+                    if (mn.Contains("Crew_Suit") || mn.Contains("Engineer_Jacket"))
+                    {
+                        var inst = new Material(m);
+                        inst.SetColor("_BaseColor", suitColor);
+                        sm[i] = inst; chg = true;
+                    }
+                    else if (mn.Contains("Crew_Trim"))
+                    {
+                        var inst = new Material(m);
+                        inst.SetColor("_BaseColor", trimColor);
+                        sm[i] = inst; chg = true;
+                    }
+                    else if (isMechanic && mn.Contains("Crew_Helmet") && !mn.Contains("Visor"))
+                    {
+                        var inst = new Material(m);
+                        inst.SetColor("_BaseColor", helmetColor);
+                        inst.SetFloat("_Smoothness", 0.85f);
+                        sm[i] = inst; chg = true;
+                    }
+                    else if (mn.Contains("Crew_Visor"))
+                    {
+                        var inst = new Material(m);
+                        inst.SetColor("_BaseColor", new Color(0.02f, 0.025f, 0.035f));
+                        inst.SetFloat("_Metallic", 0.35f);
+                        inst.SetFloat("_Smoothness", 0.92f);
+                        sm[i] = inst; chg = true;
+                    }
+                }
+                if (chg) r.sharedMaterials = sm;
+            }
+        }
 
         Member Add(Role role, int corner, Vector3 work, Vector3 ready, Vector3 home)
         {
-            var root = new GameObject(role + (corner >= 0 ? "_" + corner : "")).transform;
-            root.SetParent(transform, false);
-            Part(PrimitiveType.Capsule, root, new Vector3(0, 0.62f, 0), new Vector3(0.42f, 0.5f, 0.32f), suit);         // legs + torso
-            Part(PrimitiveType.Cube, root, new Vector3(0, 0.95f, 0), new Vector3(0.44f, 0.12f, 0.33f), trim);           // chest band
-            Part(PrimitiveType.Sphere, root, new Vector3(0, 1.38f, 0), new Vector3(0.27f, 0.29f, 0.29f), helmet);       // helmet
-            var m = new Member { t = root, role = role, corner = corner, work = work, ready = ready, home = home };
-            root.localPosition = home;
+            GameObject prefab = role == Role.Engineer ? prefabEng : (role == Role.Worker ? prefabWork : prefabMech);
+            GameObject go;
+            if (prefab != null)
+            {
+                go = Instantiate(prefab, transform);
+                go.name = role + (corner >= 0 ? "_" + corner : "");
+                ApplyTeamTints(go, role != Role.Engineer && role != Role.Worker);
+            }
+            else
+            {
+                go = new GameObject(role + (corner >= 0 ? "_" + corner : ""));
+                go.transform.SetParent(transform, false);
+                Part(PrimitiveType.Capsule, go.transform, new Vector3(0, 0.85f, 0), new Vector3(0.45f, 0.65f, 0.35f), Mat(suitColor));
+            }
+            var rig = new CrewRig();
+            rig.Bind(go.transform);
+
+            var m = new Member { t = go.transform, rig = rig, role = role, corner = corner, work = work, ready = ready, home = home };
+            go.transform.localPosition = home;
             crew.Add(m);
             return m;
         }
 
-        // Jacks
-        var fj = Add(Role.FrontJack, -1, new Vector3(0, 0, 3.55f), new Vector3(0, 0, 4.6f), new Vector3(gx * 6.5f, 0, 3.4f));
-        fj.prop = Part(PrimitiveType.Cube, fj.t, new Vector3(0, 0.25f, -0.55f), new Vector3(0.5f, 0.12f, 0.9f), steel);
-        var rj = Add(Role.RearJack, -1, new Vector3(0, 0, -3.35f), new Vector3(gx * 2.3f, 0, -3.6f), new Vector3(gx * 6.5f, 0, -3.4f));
-        rj.prop = Part(PrimitiveType.Cube, rj.t, new Vector3(0, 0.25f, 0.55f), new Vector3(0.5f, 0.12f, 0.9f), steel);
+        Transform AttachTool(Member m, GameObject prefab, Transform handBone, Vector3 localOff, Quaternion localRot, float scale = 1f)
+        {
+            Transform parentTf = handBone != null ? handBone : m.t;
+            GameObject p;
+            if (prefab != null)
+            {
+                p = Instantiate(prefab, parentTf);
+                p.transform.localPosition = localOff;
+                p.transform.localRotation = localRot;
+                p.transform.localScale = Vector3.one * scale;
+            }
+            else
+            {
+                p = Part(PrimitiveType.Cube, parentTf, localOff, new Vector3(0.25f, 0.1f, 0.25f), steel).gameObject;
+            }
+            foreach (var col in p.GetComponentsInChildren<Collider>(true))
+                if (Application.isPlaying) Destroy(col); else DestroyImmediate(col);
+            return p.transform;
+        }
 
+        // Front & Rear Jack Men with Prop_PitJack
+        var fj = Add(Role.FrontJack, -1, new Vector3(0, 0, 3.65f), new Vector3(0, 0, 4.6f), new Vector3(gx * 2.45f, 0, 3.85f));
+        fj.prop = AttachTool(fj, prefabJack, fj.t, new Vector3(0f, 0f, 0.85f), Quaternion.Euler(0, 180f, 0));
+
+        var rj = Add(Role.RearJack, -1, new Vector3(0, 0, -3.45f), new Vector3(gx * 2.15f, 0, -3.7f), new Vector3(gx * 2.45f, 0, -3.7f));
+        rj.prop = AttachTool(rj, prefabJack, rj.t, new Vector3(0f, 0f, 0.85f), Quaternion.Euler(0, 180f, 0));
+
+        // 4 Corners: Gunner (Prop_WheelGun), TyreOff, TyreOn
         for (int c = 0; c < 4; c++)
         {
             Vector3 w = Wheels[c];
             float sx = Mathf.Sign(w.x), front = c < 2 ? 1f : -1f;
-            float homeX = gx * (5.5f + (c % 2) * 0.8f);
-            var gun = Add(Role.Gunner, c, new Vector3(w.x + sx * 0.62f, 0, w.z), new Vector3(w.x + sx * 1.3f, 0, w.z), new Vector3(homeX, 0, w.z + 0.6f));
-            gun.prop = Part(PrimitiveType.Cube, gun.t, new Vector3(-sx * 0.32f, 0.45f, 0), new Vector3(0.36f, 0.12f, 0.12f), steel);
-            var off = Add(Role.TyreOff, c, new Vector3(w.x + sx * 0.75f, 0, w.z + front * 0.55f), new Vector3(w.x + sx * 1.5f, 0, w.z + front * 0.7f), new Vector3(homeX, 0, w.z + front * 1.4f));
-            off.stack = new Vector3(w.x + sx * 2.4f, 0, w.z + front * 0.9f);
-            var on = Add(Role.TyreOn, c, new Vector3(w.x + sx * 0.75f, 0, w.z - front * 0.55f), new Vector3(w.x + sx * 2.2f, 0, w.z - front * 0.2f), new Vector3(homeX, 0, w.z - front * 0.8f));
+            float homeX = gx * (2.35f + (c % 2) * 0.15f);
+            bool onGarageSide = Mathf.Sign(sx) == Mathf.Sign(gx);
+            var gun = Add(Role.Gunner, c, new Vector3(w.x + sx * 0.78f, 0, w.z), new Vector3(onGarageSide ? gx * 2.10f : w.x + sx * 1.45f, 0, w.z), new Vector3(homeX, 0, w.z + 0.6f));
+            gun.prop = AttachTool(gun, prefabGun, gun.rig.fistR ?? gun.t, gun.rig.fistR != null ? Vector3.zero : new Vector3(0, 0.52f, 0.35f), Quaternion.Euler(0f, 0f, 0f));
 
-            // Tyres: the old set (shown while it comes off) and the new set (carried in by the tyre-on man)
+            var off = Add(Role.TyreOff, c, new Vector3(w.x + sx * 0.85f, 0, w.z + front * 0.62f), new Vector3(onGarageSide ? gx * 2.20f : w.x + sx * 1.65f, 0, w.z + front * 0.78f), new Vector3(homeX, 0, w.z + front * 1.4f));
+            off.stack = new Vector3(onGarageSide ? gx * 2.35f : w.x + sx * 2.35f, 0, w.z + front * 0.90f);
+
+            Add(Role.TyreOn, c, new Vector3(w.x + sx * 0.85f, 0, w.z - front * 0.62f), new Vector3(onGarageSide ? gx * 2.25f : w.x + sx * 2.25f, 0, w.z - front * 0.25f), new Vector3(homeX, 0, w.z - front * 0.8f));
+
             oldTyre[c] = Tyre(rubber, c < 2);
             newTyre[c] = Tyre(rubber, c < 2);
             newTyre[c].gameObject.SetActive(false);
             oldTyre[c].gameObject.SetActive(false);
         }
-        Add(Role.Stabiliser, 0, new Vector3(-1.25f, 0, 0.1f), new Vector3(-1.9f, 0, 0.2f), new Vector3(gx * 7.2f, 0, 0.5f));
-        Add(Role.Stabiliser, 1, new Vector3(1.25f, 0, 0.1f), new Vector3(1.9f, 0, 0.2f), new Vector3(gx * 7.2f, 0, -0.5f));
 
-        // Release light on a post in front of the box, garage side
-        Part(PrimitiveType.Cylinder, transform, new Vector3(gx * 2.6f, 1.2f, 4.2f), new Vector3(0.08f, 1.2f, 0.08f), steel);
+        // Side Stabilisers
+        Add(Role.Stabiliser, 0, new Vector3(-1.35f, 0, 0.1f), new Vector3(-2.0f, 0, 0.2f), new Vector3(gx * 2.45f, 0, 0.5f));
+        Add(Role.Stabiliser, 1, new Vector3(1.35f, 0, 0.1f), new Vector3(2.0f, 0, 0.2f), new Vector3(gx * 2.45f, 0, -0.5f));
+
+        // 2 Front Wing Replacement Mechanics + Spare Wing prop textured with team livery
+        var fw0 = Add(Role.WingCrew, 0, new Vector3(-1.05f, 0, 2.55f), new Vector3(gx * 2.25f, 0, 2.6f), new Vector3(gx * 2.45f, 0, 2.4f));
+        var fw1 = Add(Role.WingCrew, 1, new Vector3(1.05f, 0, 2.55f), new Vector3(gx * 2.25f, 0, 2.1f), new Vector3(gx * 2.45f, 0, 1.9f));
+        if (prefabWing != null)
+        {
+            var wingGo = Instantiate(prefabWing, transform);
+            wingGo.name = "Spare_FrontWing";
+            var liveryMat = Resources.Load<Material>("F1Liveries/Livery_" + liveryIndex.ToString("00"));
+            if (liveryMat != null)
+                foreach (var r in wingGo.GetComponentsInChildren<Renderer>(true)) r.sharedMaterial = liveryMat;
+            foreach (var col in wingGo.GetComponentsInChildren<Collider>(true))
+                if (Application.isPlaying) Destroy(col); else DestroyImmediate(col);
+            spareWingProp = wingGo.transform;
+            spareWingProp.localPosition = new Vector3(gx * 2.35f, 0.4f, 2.2f);
+            spareWingProp.gameObject.SetActive(false);
+        }
+
+        // 2 Race Engineers (tablets + headsets) & 2 Garage Workers (hi-vis vests) stationed cleanly on tarmac apron
+        Add(Role.Engineer, 0, new Vector3(gx * 2.55f, 0, 0.45f), new Vector3(gx * 2.55f, 0, 0.45f), new Vector3(gx * 2.60f, 0, 0.45f));
+        Add(Role.Engineer, 1, new Vector3(gx * 2.55f, 0, -0.55f), new Vector3(gx * 2.55f, 0, -0.55f), new Vector3(gx * 2.60f, 0, -0.55f));
+        Add(Role.Worker, 0, new Vector3(gx * 2.35f, 0, 3.55f), new Vector3(gx * 2.25f, 0, 3.55f), new Vector3(gx * 2.50f, 0, 3.65f));
+        Add(Role.Worker, 1, new Vector3(gx * 2.35f, 0, -3.55f), new Vector3(gx * 2.25f, 0, -3.55f), new Vector3(gx * 2.50f, 0, -3.65f));
+
+        // Team Overhead Pit Gantry & Release Light directly over/beside box on garage side (clear of Worker 0)
+        Part(PrimitiveType.Cylinder, transform, new Vector3(gx * 2.65f, 1.9f, 4.35f), new Vector3(0.09f, 1.9f, 0.09f), gantryDark);
+        Part(PrimitiveType.Cube, transform, new Vector3(gx * 1.35f, 3.65f, 4.35f), new Vector3(2.9f, 0.22f, 0.24f), Mat(primary, 0.45f));
+        Part(PrimitiveType.Cube, transform, new Vector3(0.0f, 3.42f, 4.35f), new Vector3(1.1f, 0.14f, 0.18f), Mat(secondary, 0.45f));
+
         lightOff = Mat(new Color(0.1f, 0.1f, 0.1f));
-        lightRed = Mat(new Color(1f, 0.1f, 0.08f), 0.6f, new Color(1f, 0.05f, 0.03f) * 3f);
-        lightGreen = Mat(new Color(0.1f, 1f, 0.3f), 0.6f, new Color(0.05f, 1f, 0.2f) * 3f);
-        releaseLight = Part(PrimitiveType.Cube, transform, new Vector3(gx * 2.6f, 2.5f, 4.2f), new Vector3(0.5f, 0.35f, 0.2f), lightOff).GetComponent<Renderer>();
-        // Box markings on the pit lane floor
-        var paint = Mat(new Color(0.95f, 0.95f, 0.95f), 0.2f);
-        Part(PrimitiveType.Cube, transform, new Vector3(0, 0.012f, 3.0f), new Vector3(2.2f, 0.01f, 0.12f), paint);
-        Part(PrimitiveType.Cube, transform, new Vector3(-1.9f, 0.012f, 0), new Vector3(0.12f, 0.01f, 6f), Mat(primary, 0.2f));
-        Part(PrimitiveType.Cube, transform, new Vector3(1.9f, 0.012f, 0), new Vector3(0.12f, 0.01f, 6f), Mat(primary, 0.2f));
+        lightRed = Mat(new Color(1f, 0.1f, 0.08f), 0.6f, new Color(1f, 0.05f, 0.03f) * 3.5f);
+        lightGreen = Mat(new Color(0.1f, 1f, 0.3f), 0.6f, new Color(0.05f, 1f, 0.2f) * 3.5f);
+        releaseLight = Part(PrimitiveType.Cube, transform, new Vector3(0.0f, 3.22f, 4.37f), new Vector3(0.65f, 0.32f, 0.22f), lightOff).GetComponent<Renderer>();
+
+        // High-visibility Team Pit Box Floor Markings on the garage working apron
+        var paintW = Mat(new Color(0.95f, 0.95f, 0.95f), 0.2f);
+        var paintP = Mat(primary, 0.25f);
+        var paintS = Mat(secondary, 0.25f);
+        Part(PrimitiveType.Cube, transform, new Vector3(0, 0.015f, 2.85f), new Vector3(2.3f, 0.012f, 0.16f), paintW);
+        Part(PrimitiveType.Cube, transform, new Vector3(-1.35f, 0.015f, 0), new Vector3(0.14f, 0.012f, 5.8f), paintP);
+        Part(PrimitiveType.Cube, transform, new Vector3(1.35f, 0.015f, 0), new Vector3(0.14f, 0.012f, 5.8f), paintP);
+        Part(PrimitiveType.Cube, transform, new Vector3(0, 0.014f, -2.85f), new Vector3(2.3f, 0.012f, 0.14f), paintS);
 
         var propsPrefab = Resources.Load<GameObject>("F1Tyres/PitProps_Cluster");
         if (propsPrefab != null)
         {
             var props = Instantiate(propsPrefab, transform);
             props.name = "PitProps";
-            props.transform.localPosition = new Vector3(gx * 5.0f, 0f, -2.0f);
+            props.transform.localPosition = new Vector3(gx * 2.50f, 0f, -4.65f);
             props.transform.localRotation = Quaternion.Euler(0f, gx > 0f ? -90f : 90f, 0f);
             foreach (var col in props.GetComponentsInChildren<Collider>(true))
                 if (Application.isPlaying) Destroy(col); else DestroyImmediate(col);
         }
+
+        // Pose all idle crew into natural arms-down posture right at creation
+        EvaluateAnimation(0f);
     }
 
     Transform Tyre(Material rubber, bool front)
@@ -176,15 +435,15 @@ public class PitBox : MonoBehaviour
 
     // ---------- Control (called by the race manager) ----------
 
-    // A car of this team is coming down the pit lane: crew out of the garage to their positions
     public void Prepare()
     {
         if (phase == Phase.Garage || phase == Phase.Released) { phase = Phase.Ready; timer = 0f; }
     }
 
-    public void Begin(float serviceTime)
+    public void Begin(float serviceTime, bool replaceFrontWing = false)
     {
         duration = Mathf.Max(1.6f, serviceTime);
+        spareWingActiveForStop = replaceFrontWing;
         phase = Phase.Service;
         timer = 0f;
         readyBlend = 1f;
@@ -194,9 +453,9 @@ public class PitBox : MonoBehaviour
             oldTyre[c].gameObject.SetActive(false);
             newTyre[c].gameObject.SetActive(true);
         }
+        if (spareWingProp != null) spareWingProp.gameObject.SetActive(replaceFrontWing);
     }
 
-    // Old API: on = car stopped (default timing), off = service finished
     public void SetWorking(bool on)
     {
         if (on) { if (phase != Phase.Service) Begin(duration); }
@@ -208,6 +467,15 @@ public class PitBox : MonoBehaviour
         if (releaseLight != null) releaseLight.sharedMaterial = lightGreen;
         phase = Phase.Released;
         releaseTimer = 0f;
+        if (spareWingProp != null) spareWingProp.gameObject.SetActive(false);
+    }
+
+    // EditMode verification helper for deterministic batchmode renders
+    public void PreviewServiceAt(float elapsed, float totalService, bool replaceFrontWing)
+    {
+        Begin(totalService, replaceFrontWing);
+        timer = elapsed;
+        EvaluateAnimation(0.02f);
     }
 
     // ---------- Animation ----------
@@ -220,84 +488,199 @@ public class PitBox : MonoBehaviour
         timer += dt;
         switch (phase)
         {
-            case Phase.Garage: readyBlend = Mathf.MoveTowards(readyBlend, 0f, dt * 0.6f); break;
-            case Phase.Ready: readyBlend = Mathf.MoveTowards(readyBlend, 1f, dt * 0.8f); if (timer > 40f) phase = Phase.Garage; break;
+            case Phase.Garage: readyBlend = Mathf.MoveTowards(readyBlend, 0f, dt * 0.7f); break;
+            case Phase.Ready: readyBlend = Mathf.MoveTowards(readyBlend, 1f, dt * 0.9f); if (timer > 40f) phase = Phase.Garage; break;
             case Phase.Released:
                 releaseTimer += dt;
                 if (releaseTimer > 1.6f && releaseLight != null) releaseLight.sharedMaterial = lightOff;
-                if (releaseTimer > 2.5f) { phase = Phase.Garage; for (int c = 0; c < 4; c++) { oldTyre[c].gameObject.SetActive(false); newTyre[c].gameObject.SetActive(false); } }
+                if (releaseTimer > 2.6f)
+                {
+                    phase = Phase.Garage;
+                    spareWingActiveForStop = false;
+                    for (int c = 0; c < 4; c++) { oldTyre[c].gameObject.SetActive(false); newTyre[c].gameObject.SetActive(false); }
+                }
                 break;
         }
+        EvaluateAnimation(dt);
+    }
 
+    void EvaluateAnimation(float dt)
+    {
         float D = duration, t = phase == Phase.Service ? timer : phase == Phase.Released ? D + releaseTimer : 0f;
         bool active = phase == Phase.Service || phase == Phase.Released;
+        float wavePhase = Application.isPlaying ? Time.time : timer;
+
         foreach (var m in crew)
         {
-            // Walk between garage and ready spot, then step in to work during the stop
-            Vector3 basePos = Vector3.Lerp(m.home, m.ready, readyBlend);
+            Vector3 basePos = m.role == Role.Engineer || m.role == Role.Worker
+                ? Vector3.Lerp(m.home, m.ready, readyBlend)
+                : Vector3.Lerp(m.home, m.ready, readyBlend);
             float inBlend = 0f;
             Vector3 pos = basePos;
+
             if (active)
             {
                 switch (m.role)
                 {
-                    case Role.FrontJack: inBlend = S(-0.3f, 0.05f, t) * (1f - S(D + 0.05f, D + 0.5f, t)); break;
-                    case Role.RearJack: inBlend = S(0f, 0.3f, t) * (1f - S(D - 0.15f, D + 0.2f, t)); break;
-                    case Role.Gunner: inBlend = S(0f, 0.18f, t) * (1f - S(D - 0.1f, D + 0.25f, t)); break;
-                    case Role.TyreOff: inBlend = S(0.05f, 0.3f, t) * (1f - S(0.7f, 1.0f, t)); break;
-                    case Role.TyreOn: inBlend = S(0.55f, D - 0.75f, t) * (1f - S(D - 0.3f, D + 0.1f, t)); break;
-                    case Role.Stabiliser: inBlend = S(0f, 0.2f, t) * (1f - S(D - 0.1f, D + 0.3f, t)); break;
+                    case Role.FrontJack:  inBlend = S(-0.25f, 0.05f, t) * (1f - S(D + 0.05f, D + 0.5f, t)); break;
+                    case Role.RearJack:   inBlend = S(0f, 0.28f, t) * (1f - S(D - 0.15f, D + 0.25f, t)); break;
+                    case Role.Gunner:     inBlend = S(0f, 0.18f, t) * (1f - S(D - 0.10f, D + 0.25f, t)); break;
+                    case Role.TyreOff:    inBlend = S(0.05f, 0.30f, t) * (1f - S(0.75f, 1.05f, t)); break;
+                    case Role.TyreOn:     inBlend = S(0.55f, Mathf.Max(0.95f, D - 0.75f), t) * (1f - S(D - 0.25f, D + 0.10f, t)); break;
+                    case Role.Stabiliser: inBlend = S(0f, 0.20f, t) * (1f - S(D - 0.10f, D + 0.30f, t)); break;
+                    case Role.WingCrew:
+                        if (spareWingActiveForStop)
+                            inBlend = S(0.15f, 0.75f, t) * (1f - S(D - 0.35f, D + 0.05f, t));
+                        break;
+                    case Role.Engineer:
+                    case Role.Worker:
+                        inBlend = S(0f, 0.25f, t) * (1f - S(D, D + 0.4f, t));
+                        break;
                 }
                 pos = Vector3.Lerp(basePos, m.work, inBlend);
                 if (m.role == Role.TyreOff) pos = Vector3.Lerp(pos, m.stack, S(0.75f, 1.15f, t) * (1f - S(D + 0.4f, D + 2.2f, t)));
             }
-            // Running bob while moving, kneel at the wheel
+
             Vector3 prev = m.t.localPosition;
-            float speed = (pos - prev).magnitude / Mathf.Max(dt, 1e-4f);
-            float bob = Mathf.Clamp01(speed / 3f) * Mathf.Abs(Mathf.Sin(Time.time * 14f + m.corner)) * 0.06f;
-            float kneel = (m.role == Role.Gunner || m.role == Role.TyreOn || m.role == Role.TyreOff) ? inBlend * 0.38f : 0f;
-            m.t.localPosition = new Vector3(pos.x, bob - kneel, pos.z);
-            Vector3 look = (m.role == Role.FrontJack || m.role == Role.RearJack) && inBlend > 0.5f ? -pos : (inBlend > 0.3f ? m.work - m.ready : pos - prev);
+            float moveSpeed = dt > 1e-4f ? (pos - prev).magnitude / dt : 0f;
+            float runWeight = Mathf.Clamp01(moveSpeed / 2.2f);
+            float runCycle = wavePhase * 11f + m.corner * 1.1f;
+
+            // Keep feet on asphalt (y = 0); CrewRig handles hip crouch height cleanly!
+            m.t.localPosition = new Vector3(pos.x, 0f, pos.z);
+
+            Vector3 look;
+            if (m.role == Role.Engineer || m.role == Role.Worker)
+                look = new Vector3(-Mathf.Sign(m.home.x), 0f, 0.35f);
+            else if (m.role == Role.FrontJack || m.role == Role.RearJack)
+                look = -pos;
+            else if (inBlend > 0.20f && m.role == Role.WingCrew)
+                look = new Vector3(0f, 0f, 2.52f) - new Vector3(pos.x, 0f, pos.z);
+            else if (inBlend > 0.20f && (m.role == Role.Gunner || m.role == Role.TyreOn || m.role == Role.TyreOff || m.role == Role.Stabiliser) && m.corner >= 0 && m.corner < 4)
+                look = Wheels[m.corner] - new Vector3(pos.x, Wheels[m.corner].y, pos.z);
+            else
+                look = (pos - prev).sqrMagnitude > 1e-4f ? (pos - prev) : (m.work - m.ready);
             look.y = 0f;
-            if (look.sqrMagnitude > 0.0004f) m.t.localRotation = Quaternion.Slerp(m.t.localRotation, Quaternion.LookRotation(look), dt * 10f);
-            // Wheel gun rattles while it is on the nut
+            if (look.sqrMagnitude > 0.0004f)
+            {
+                Quaternion targetRot = Quaternion.LookRotation(look.normalized);
+                m.t.localRotation = dt > 0.001f ? Quaternion.Slerp(m.t.localRotation, targetRot, Mathf.Min(1f, dt * 12f)) : targetRot;
+            }
+
+            // Apply anatomical skeletal bone posing on the downloaded Quaternius rig
+            if (m.rig != null && m.rig.valid)
+            {
+                float kneel = 0f, lean = 4f, headPitch = 0f, headYaw = 0f;
+                Vector3 armL = new Vector3(-0.22f, -0.88f, 0.22f);
+                Vector3 armR = new Vector3(0.22f, -0.88f, 0.22f);
+
+                switch (m.role)
+                {
+                    case Role.Gunner:
+                        kneel = inBlend * 0.92f;
+                        lean = Mathf.Lerp(4f, 26f, inBlend);
+                        headPitch = Mathf.Lerp(0f, 18f, inBlend);
+                        armL = Vector3.Lerp(armL, new Vector3(-0.18f, -0.15f, 0.95f), inBlend);
+                        armR = Vector3.Lerp(armR, new Vector3(0.18f, -0.10f, 0.98f), inBlend);
+                        break;
+                    case Role.TyreOff:
+                    case Role.TyreOn:
+                        kneel = inBlend * 0.78f;
+                        lean = Mathf.Lerp(4f, 22f, inBlend);
+                        armL = Vector3.Lerp(armL, new Vector3(-0.35f, -0.25f, 0.90f), inBlend);
+                        armR = Vector3.Lerp(armR, new Vector3(0.35f, -0.25f, 0.90f), inBlend);
+                        break;
+                    case Role.FrontJack:
+                    case Role.RearJack:
+                        kneel = inBlend * 0.35f;
+                        lean = Mathf.Lerp(6f, 18f, inBlend);
+                        float liftArm = active ? S(0.15f, 0.35f, t) * (1f - S(D - 0.25f, D, t)) : 0f;
+                        armL = Vector3.Lerp(new Vector3(-0.20f, -0.55f, 0.75f), new Vector3(-0.20f, -0.25f, 0.85f), liftArm);
+                        armR = Vector3.Lerp(new Vector3(0.20f, -0.55f, 0.75f), new Vector3(0.20f, -0.25f, 0.85f), liftArm);
+                        break;
+                    case Role.Stabiliser:
+                        lean = Mathf.Lerp(4f, 14f, inBlend);
+                        armL = Vector3.Lerp(armL, new Vector3(-0.28f, -0.20f, 0.92f), inBlend);
+                        armR = Vector3.Lerp(armR, new Vector3(0.28f, -0.20f, 0.92f), inBlend);
+                        break;
+                    case Role.WingCrew:
+                        kneel = inBlend * 0.82f;
+                        lean = Mathf.Lerp(5f, 24f, inBlend);
+                        armL = Vector3.Lerp(armL, new Vector3(-0.26f, -0.35f, 0.90f), inBlend);
+                        armR = Vector3.Lerp(armR, new Vector3(0.26f, -0.35f, 0.90f), inBlend);
+                        break;
+                    case Role.Engineer:
+                        lean = 10f;
+                        headPitch = 14f;
+                        armL = new Vector3(-0.18f, -0.78f, 0.35f);
+                        armR = new Vector3(0.14f, -0.35f, 0.88f); // holding telemetry tablet cleanly forward-up!
+                        break;
+                    case Role.Worker:
+                        // Wave arm gracefully when car is approaching/ready
+                        float wave = phase == Phase.Ready ? Mathf.Sin(wavePhase * 7f + m.corner) * 0.35f : 0f;
+                        armL = new Vector3(-0.22f, -0.82f, 0.20f);
+                        armR = phase == Phase.Ready ? new Vector3(0.35f, 0.55f + wave, 0.45f) : new Vector3(0.22f, -0.82f, 0.20f);
+                        break;
+                }
+                m.rig.ApplyPose(m.t, kneel, runCycle, runWeight, armL, armR, lean, headYaw, headPitch);
+            }
+
             if (m.role == Role.Gunner && m.prop != null)
             {
-                bool firing = (t > 0.15f && t < 0.45f) || (t > D - 0.55f && t < D - 0.25f);
-                m.prop.localRotation = firing ? Quaternion.Euler(Random.Range(-6f, 6f), 0, Random.Range(-6f, 6f)) : Quaternion.identity;
+                bool firing = active && ((t > 0.15f && t < 0.45f) || (t > D - 0.55f && t < D - 0.22f));
+                m.prop.localRotation = firing ? Quaternion.Euler(Mathf.Sin(wavePhase * 60f) * 5f, 0f, Mathf.Cos(wavePhase * 52f) * 5f) : Quaternion.identity;
             }
             if ((m.role == Role.FrontJack || m.role == Role.RearJack) && m.prop != null)
             {
-                float lift = active ? S(0.2f, 0.35f, t) * (1f - S(D - 0.25f, D - 0.05f, t)) : 0f;
-                m.prop.localRotation = Quaternion.Euler(m.role == Role.FrontJack ? -12f * lift : 12f * lift, 0, 0);
+                float lift = active ? S(0.18f, 0.35f, t) * (1f - S(D - 0.28f, D - 0.05f, t)) : 0f;
+                m.prop.localRotation = Quaternion.Euler(-14f * lift, 180f, 0f);
             }
         }
 
-        // Tyres: old set comes off and is carried to the stack; new set goes from the tyre-on man to the hub
+        // Tyres & Spare Front Wing prop animations
         for (int c = 0; c < 4; c++)
         {
             var on = crew.Find(m => m.role == Role.TyreOn && m.corner == c);
             var off = crew.Find(m => m.role == Role.TyreOff && m.corner == c);
+            if (on == null || off == null) continue;
             Vector3 wheel = Wheels[c];
             float sx = Mathf.Sign(wheel.x);
             if (active)
             {
-                bool showOld = t > 0.35f && t < D + 2.3f;
+                bool showOld = t > 0.32f && t < D + 2.3f;
                 if (oldTyre[c].gameObject.activeSelf != showOld) oldTyre[c].gameObject.SetActive(showOld);
-                Vector3 hand = off.t.localPosition + new Vector3(-sx * 0.35f, 0.45f, 0);
-                oldTyre[c].localPosition = Vector3.Lerp(wheel + new Vector3(sx * 0.05f, 0, 0), hand, S(0.4f, 0.75f, t));
-                bool showNew = t < D - 0.5f;
+                Vector3 hand = off.t.localPosition + new Vector3(-sx * 0.40f, 0.52f, 0f);
+                oldTyre[c].localPosition = Vector3.Lerp(wheel + new Vector3(sx * 0.06f, 0f, 0f), hand, S(0.38f, 0.72f, t));
+
+                bool showNew = t < D - 0.45f;
                 if (newTyre[c].gameObject.activeSelf != showNew) newTyre[c].gameObject.SetActive(showNew);
-                Vector3 carry = on.t.localPosition + new Vector3(-sx * 0.35f, 0.45f, 0);
-                newTyre[c].localPosition = Vector3.Lerp(carry, wheel, S(D - 1.0f, D - 0.6f, t));
+                Vector3 carry = on.t.localPosition + new Vector3(-sx * 0.40f, 0.52f, 0f);
+                newTyre[c].localPosition = Vector3.Lerp(carry, wheel, S(Mathf.Max(0.9f, D - 1.0f), Mathf.Max(1.2f, D - 0.55f), t));
             }
             else if (phase == Phase.Ready)
             {
-                // Waiting with the new tyre in hand
                 if (!newTyre[c].gameObject.activeSelf) newTyre[c].gameObject.SetActive(true);
-                newTyre[c].localPosition = on.t.localPosition + new Vector3(-sx * 0.35f, 0.45f, 0);
+                newTyre[c].localPosition = on.t.localPosition + new Vector3(-sx * 0.40f, 0.52f, 0f);
             }
-            else if (newTyre[c].gameObject.activeSelf && readyBlend < 0.05f) newTyre[c].gameObject.SetActive(false);
+            else if (newTyre[c].gameObject.activeSelf && readyBlend < 0.05f)
+            {
+                newTyre[c].gameObject.SetActive(false);
+            }
+        }
+
+        if (spareWingProp != null && spareWingActiveForStop && active)
+        {
+            var fw0 = crew.Find(m => m.role == Role.WingCrew && m.corner == 0);
+            var fw1 = crew.Find(m => m.role == Role.WingCrew && m.corner == 1);
+            bool mounted = t >= D - 0.65f;
+            if (spareWingProp.gameObject.activeSelf == mounted) spareWingProp.gameObject.SetActive(!mounted);
+            if (!mounted && fw0 != null && fw1 != null)
+            {
+                Vector3 carryCenter = (fw0.t.localPosition + fw1.t.localPosition) * 0.5f + new Vector3(0f, 0.42f, 0.15f);
+                Vector3 noseMount = new Vector3(0f, 0.10f, 2.52f);
+                spareWingProp.localPosition = Vector3.Lerp(carryCenter, noseMount, S(0.65f, D - 0.75f, t));
+                spareWingProp.localRotation = Quaternion.identity;
+            }
         }
     }
 }

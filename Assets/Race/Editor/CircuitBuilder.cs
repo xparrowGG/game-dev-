@@ -26,6 +26,7 @@ public static class CircuitBuilder
     const string GenDir = "Assets/F1Assets/Generated";
     const string SceneDir = "Assets/Scenes/Final";
     public const int Cars = 22;
+    static bool skyCubeBuiltThisSession;
 
     static readonly string[] LiveryNames =
         { "00_Concept2026", "01_Ferrari", "02_RedBull", "03_McLaren", "04_Mercedes", "05_AstonMartin",
@@ -40,7 +41,7 @@ public static class CircuitBuilder
     {
         public string centreSource;
         public float halfWidth;
-        public float[] centre, halfWidths, pit, startFinish, pitEntry, pitExit, asphaltMin, asphaltMax;
+        public float[] centre, halfWidths, pit, garages, startFinish, pitEntry, pitExit, asphaltMin, asphaltMax;
         public DrsJson[] drs;
     }
 
@@ -50,7 +51,17 @@ public static class CircuitBuilder
     public static void BuildFinalGameAll()
     {
         if (EditorApplication.isPlaying) { Debug.LogError("Stop Play mode first."); return; }
+        skyCubeBuiltThisSession = false;
         BuildCarAssets();
+
+        if (!EngineAudio.RunAudioSelfTest(out string audioReport))
+        {
+            Debug.LogError("EngineAudio self-test FAILED:\n" + audioReport);
+            if (Application.isBatchMode) EditorApplication.Exit(2);
+            return;
+        }
+        Debug.Log("EngineAudio self-test PASSED:\n" + audioReport);
+
         F1PhysicsTest.Run();
         MenuSceneBuilder.Build(false);
         foreach (var t in GameSession.Tracks) BuildCircuitScene(t.id);
@@ -68,6 +79,10 @@ public static class CircuitBuilder
         Debug.Log($"FINAL BUILD SUMMARY: {passed}/{GameSession.Tracks.Length} circuits passed\n{report}");
         if (Application.isBatchMode && passed < GameSession.Tracks.Length)
             Debug.LogError($"Batch build verification failed: {passed}/{GameSession.Tracks.Length} circuits passed");
+
+        PitLaneVerifyTest();
+        RenderUnityVerificationScreenshots();
+
         string menuPath = SceneDir + "/Final Main Menu.unity";
         if (File.Exists(menuPath)) EditorSceneManager.OpenScene(menuPath, OpenSceneMode.Single);
     }
@@ -127,8 +142,13 @@ public static class CircuitBuilder
 
     static Texture2D LoadOrPackMetallicGloss(string metPath, string roughPath, string outPath)
     {
-        if (!File.Exists(outPath))
+        bool needPack = !File.Exists(outPath)
+                     || (File.Exists(metPath) && File.GetLastWriteTimeUtc(metPath) > File.GetLastWriteTimeUtc(outPath))
+                     || (File.Exists(roughPath) && File.GetLastWriteTimeUtc(roughPath) > File.GetLastWriteTimeUtc(outPath));
+        if (needPack)
         {
+            EnsureReadableNonColor(metPath);
+            EnsureReadableNonColor(roughPath);
             var met = LoadTex(metPath);
             var rough = LoadTex(roughPath);
             if (met != null && rough != null)
@@ -142,12 +162,24 @@ public static class CircuitBuilder
                 t.SetPixels(outp); t.Apply();
                 File.WriteAllBytes(outPath, t.EncodeToPNG());
                 Object.DestroyImmediate(t);
-                AssetDatabase.ImportAsset(outPath);
+                AssetDatabase.ImportAsset(outPath, ImportAssetOptions.ForceUpdate);
                 var ti = (TextureImporter)AssetImporter.GetAtPath(outPath);
-                ti.sRGBTexture = false; ti.maxTextureSize = 2048; ti.SaveAndReimport();
+                if (ti != null) { ti.sRGBTexture = false; ti.maxTextureSize = 2048; ti.SaveAndReimport(); }
             }
         }
         return LoadTex(outPath);
+    }
+
+    static void EnsureReadableNonColor(string texPath)
+    {
+        var ti = AssetImporter.GetAtPath(texPath) as TextureImporter;
+        if (ti != null && (!ti.isReadable || ti.sRGBTexture || ti.maxTextureSize < 2048))
+        {
+            ti.isReadable = true;
+            ti.sRGBTexture = false;
+            ti.maxTextureSize = 2048;
+            ti.SaveAndReimport();
+        }
     }
 
     public static void BuildLiveries()
@@ -157,12 +189,19 @@ public static class CircuitBuilder
         var lit = Shader.Find("Universal Render Pipeline/Lit");
         string texDir = "Assets/F1Assets/Car/Textures";
         var normal = LoadTex(texDir + "/shared/T_F1_2026_Normal.png");
-        var ao = LoadTex(texDir + "/shared/T_F1_2026_AO.png");
         var emission = LoadTex(texDir + "/shared/T_F1_2026_Emission.png");
         for (int i = 0; i < LiveryNames.Length; i++)
         {
             string n = LiveryNames[i];
-            var baseCol = LoadTex($"{texDir}/teams/T_{n}_BaseColor.png");
+            string basePath = $"{texDir}/teams/T_{n}_BaseColor.png";
+            var bti = AssetImporter.GetAtPath(basePath) as TextureImporter;
+            if (bti != null && (bti.maxTextureSize < 4096 || bti.textureCompression != TextureImporterCompression.CompressedHQ))
+            {
+                bti.maxTextureSize = 4096;
+                bti.textureCompression = TextureImporterCompression.CompressedHQ;
+                bti.SaveAndReimport();
+            }
+            var baseCol = LoadTex(basePath);
             var mg = LoadOrPackMetallicGloss(
                 $"{texDir}/teams/T_{n}_Metallic.png",
                 $"{texDir}/teams/T_{n}_Roughness.png",
@@ -178,19 +217,73 @@ public static class CircuitBuilder
             m.SetFloat("_Smoothness", 1f);
             m.SetFloat("_SmoothnessTextureChannel", 0f);
             if (normal != null) { m.SetTexture("_BumpMap", normal); m.SetFloat("_BumpScale", 1f); m.EnableKeyword("_NORMALMAP"); }
-            if (ao != null) { m.SetTexture("_OcclusionMap", ao); m.SetFloat("_OcclusionStrength", 1f); m.EnableKeyword("_OCCLUSIONMAP"); }
+            // Strip legacy UV1 AO map so URP Lit never multiplies car albedo by 0
+            m.SetTexture("_OcclusionMap", null);
+            m.SetFloat("_OcclusionStrength", 0f);
+            m.DisableKeyword("_OCCLUSIONMAP");
             if (emission != null)
             {
                 m.SetTexture("_EmissionMap", emission);
-                m.SetColor("_EmissionColor", Color.white * 1.5f);
+                m.SetColor("_EmissionColor", Color.white * 2.2f);
                 m.EnableKeyword("_EMISSION");
                 m.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
             }
             m.enableInstancing = true;
             EditorUtility.SetDirty(m);
         }
+        BuildCarDetailMaterials(lit, texDir, normal);
         AssetDatabase.SaveAssets();
-        Debug.Log("Liveries built: " + LiveryNames.Length);
+        Debug.Log("Liveries built (4K, AO stripped): " + LiveryNames.Length);
+    }
+
+    static void BuildCarDetailMaterials(Shader lit, string texDir, Texture2D normal)
+    {
+        // 1. Steering Wheel Body + Gloves
+        string swTexPath = texDir + "/shared/T_SteeringWheel_Body_BaseColor.png";
+        var swTi = AssetImporter.GetAtPath(swTexPath) as TextureImporter;
+        if (swTi != null && (!swTi.sRGBTexture || swTi.maxTextureSize < 2048))
+        {
+            swTi.sRGBTexture = true;
+            swTi.maxTextureSize = 2048;
+            swTi.SaveAndReimport();
+        }
+        var swBase = LoadTex(swTexPath);
+        string swMatPath = $"{LiveryDir}/SteeringWheel_Body.mat";
+        var swMat = AssetDatabase.LoadAssetAtPath<Material>(swMatPath);
+        if (swMat == null) { swMat = new Material(lit); AssetDatabase.CreateAsset(swMat, swMatPath); }
+        swMat.shader = lit;
+        if (swBase != null) swMat.SetTexture("_BaseMap", swBase);
+        swMat.SetColor("_BaseColor", Color.white);
+        swMat.SetFloat("_Metallic", 0.15f);
+        swMat.SetFloat("_Smoothness", 0.52f);
+        if (normal != null) { swMat.SetTexture("_BumpMap", normal); swMat.SetFloat("_BumpScale", 0.7f); swMat.EnableKeyword("_NORMALMAP"); }
+        swMat.SetTexture("_OcclusionMap", null);
+        swMat.SetFloat("_OcclusionStrength", 0f);
+        swMat.DisableKeyword("_OCCLUSIONMAP");
+        EditorUtility.SetDirty(swMat);
+
+        // 2. Steering Wheel Unlit OLED Screen
+        var unlit = Shader.Find("Universal Render Pipeline/Unlit") ?? Shader.Find("Unlit/Texture");
+        string scrPath = $"{LiveryDir}/SteeringWheel_Screen.mat";
+        var scrMat = AssetDatabase.LoadAssetAtPath<Material>(scrPath);
+        if (scrMat == null) { scrMat = new Material(unlit); AssetDatabase.CreateAsset(scrMat, scrPath); }
+        scrMat.shader = unlit;
+        if (scrMat.HasProperty("_BaseColor")) scrMat.SetColor("_BaseColor", Color.white);
+        if (scrMat.HasProperty("_Color")) scrMat.SetColor("_Color", Color.white);
+        EditorUtility.SetDirty(scrMat);
+
+        // 3. Mirror Chrome Glass
+        string mirPath = $"{LiveryDir}/Mirror_Chrome.mat";
+        var mirMat = AssetDatabase.LoadAssetAtPath<Material>(mirPath);
+        if (mirMat == null) { mirMat = new Material(lit); AssetDatabase.CreateAsset(mirMat, mirPath); }
+        mirMat.shader = lit;
+        mirMat.SetColor("_BaseColor", new Color(0.88f, 0.92f, 0.97f));
+        mirMat.SetFloat("_Metallic", 1f);
+        mirMat.SetFloat("_Smoothness", 0.97f);
+        mirMat.SetTexture("_OcclusionMap", null);
+        mirMat.SetFloat("_OcclusionStrength", 0f);
+        mirMat.DisableKeyword("_OCCLUSIONMAP");
+        EditorUtility.SetDirty(mirMat);
     }
 
     public static void BuildTyreMaterials()
@@ -223,14 +316,17 @@ public static class CircuitBuilder
             m.SetColor("_BaseColor", Color.white);
             if (mg != null) { m.SetTexture("_MetallicGlossMap", mg); m.EnableKeyword("_METALLICSPECGLOSSMAP"); }
             m.SetFloat("_Metallic", 1f);
-            m.SetFloat("_Smoothness", 0.85f);
+            m.SetFloat("_Smoothness", 1f);
             m.SetFloat("_SmoothnessTextureChannel", 0f);
             if (normal != null) { m.SetTexture("_BumpMap", normal); m.SetFloat("_BumpScale", 1f); m.EnableKeyword("_NORMALMAP"); }
+            m.SetTexture("_OcclusionMap", null);
+            m.SetFloat("_OcclusionStrength", 0f);
+            m.DisableKeyword("_OCCLUSIONMAP");
             m.enableInstancing = true;
             EditorUtility.SetDirty(m);
         }
         AssetDatabase.SaveAssets();
-        Debug.Log("Pirelli tyre materials built: " + specs.Length);
+        Debug.Log("Copyright-safe HD tyre materials built: " + specs.Length);
     }
 
     public static void BuildPitPropPrefabs()
@@ -407,16 +503,23 @@ public static class CircuitBuilder
             if (hull != null) Object.DestroyImmediate(hull.gameObject);
         }
 
-        // Livery on chassis/wings/hubs and Pirelli rubber on F1_Wheel_*; LOD groups by suffix
+        // Livery on chassis/wings/hubs, dedicated materials on wheel/screen/mirrors/tyres; LOD groups by suffix
         var livery = AssetDatabase.LoadAssetAtPath<Material>(LiveryDir + "/Livery_00.mat");
         var tyreMat = AssetDatabase.LoadAssetAtPath<Material>(TyreDir + "/Tyre_Medium.mat");
+        var swBodyMat = AssetDatabase.LoadAssetAtPath<Material>(LiveryDir + "/SteeringWheel_Body.mat");
+        var swScreenMat = AssetDatabase.LoadAssetAtPath<Material>(LiveryDir + "/SteeringWheel_Screen.mat");
+        var mirrorMat = AssetDatabase.LoadAssetAtPath<Material>(LiveryDir + "/Mirror_Chrome.mat");
         var lods = new List<Renderer>[3] { new List<Renderer>(), new List<Renderer>(), new List<Renderer>() };
         foreach (var r in root.GetComponentsInChildren<Renderer>(true))
         {
             if (r.name.StartsWith("F1_Wheel") && tyreMat != null) r.sharedMaterial = tyreMat;
+            else if (r.name == "SteeringWheel_Screen" && swScreenMat != null) r.sharedMaterial = swScreenMat;
+            else if (r.name.StartsWith("F1_SteeringWheel") && swBodyMat != null) r.sharedMaterial = swBodyMat;
+            else if (r.name.StartsWith("Mirror_Glass") && mirrorMat != null) r.sharedMaterial = mirrorMat;
             else if (livery != null) r.sharedMaterial = livery;
-            r.shadowCastingMode = ShadowCastingMode.On;
+            r.shadowCastingMode = r.name == "SteeringWheel_Screen" ? ShadowCastingMode.Off : ShadowCastingMode.On;
             for (int l = 0; l < 3; l++) if (r.name.EndsWith("_LOD" + l)) lods[l].Add(r);
+            if (r.name == "SteeringWheel_Screen") lods[0].Add(r);
         }
         var group = root.AddComponent<LODGroup>();
         group.SetLODs(new[]
@@ -440,12 +543,15 @@ public static class CircuitBuilder
             info.headZ = db.min.z + 0.3f;
             info.headY = db.max.y - 0.1f;
         }
+        var swPivot = FindDeep(root.transform, "SteeringWheel_Pivot");
+        if (swPivot != null)
+            info.steeringWheelLocalPos = root.transform.InverseTransformPoint(swPivot.position);
 
         PrefabUtility.SaveAsPrefabAsset(root, CarPrefab);
         Object.DestroyImmediate(root);
         AssetDatabase.SaveAssets();
         Debug.Log($"Car prefab built: front axle {info.frontAxleZ:0.00}, rear {info.rearAxleZ:0.00}, track {info.frontTrack:0.00}/{info.rearTrack:0.00}, " +
-                  $"tyre radius {radius:0.000}, collider {colInfo}, LODs {lods[0].Count}/{lods[1].Count}/{lods[2].Count}");
+                  $"tyre radius {radius:0.000}, swPivot {info.steeringWheelLocalPos:F3}, collider {colInfo}, LODs {lods[0].Count}/{lods[1].Count}/{lods[2].Count}");
     }
 
     static Transform FindDeep(Transform t, string name)
@@ -595,6 +701,8 @@ public static class CircuitBuilder
         // Cars
         var player = BuildPlayer();
         manager.player = player.GetComponent<F1Car>();
+        var wheelDisp = player.GetComponentInChildren<SteeringWheelDisplay>(true);
+        if (wheelDisp != null) wheelDisp.manager = manager;
         manager.ais = BuildRivals(root, manager);
 
         var rivalGo = new GameObject("RivalEngineAudio");
@@ -629,7 +737,7 @@ public static class CircuitBuilder
         var kerb = SurfaceMat("Kerb", 0.9f);
         var grass = SurfaceMat("Grass", 0.6f);
         var gravel = SurfaceMat("Gravel", 0.5f);
-        var wall = SurfaceMat("Barrier", 0.2f);
+        var wall = SurfaceMat("Barrier", 0.12f);
         var all = map.GetComponentsInChildren<Transform>(true);
         var crowd1 = new HashSet<string>();
         foreach (var t in all) if (t.name.EndsWith("Crowd_LOD1")) crowd1.Add(t.name.Substring(0, t.name.Length - 1));
@@ -761,7 +869,9 @@ public static class CircuitBuilder
         var m = AssetDatabase.LoadAssetAtPath<PhysicsMaterial>(p);
         if (m == null) { m = new PhysicsMaterial(name); AssetDatabase.CreateAsset(m, p); }
         m.dynamicFriction = friction; m.staticFriction = friction;
+        m.frictionCombine = name == "Barrier" ? PhysicsMaterialCombine.Minimum : PhysicsMaterialCombine.Average;
         m.bounciness = 0f; m.bounceCombine = PhysicsMaterialCombine.Minimum;
+        EditorUtility.SetDirty(m);
         return m;
     }
 
@@ -949,13 +1059,70 @@ public static class CircuitBuilder
         m.pitExitEnd = Mathf.Repeat(startD + span, L);
         m.pitSpeed = 80f / 3.6f;
         m.pitEntryDistance = m.pitEntryEnd;
-        // Team boxes spread along the straight part of the lane
-        float a0 = (inIdx * 2f) + 25f, a1 = (outIdx * 2f) - 25f;
-        if (a1 < a0) { a0 = inIdx * 2f; a1 = outIdx * 2f; }
         int teams = GameSession.Teams.Length;
         m.boxDistances = new float[teams];
-        for (int t = 0; t < teams; t++) m.boxDistances[t] = Mathf.Repeat(startD + Mathf.Lerp(a0, a1, (t + 0.5f) / teams), L);
-        return $"pit lane {span:0} m, offset {off:0.0} m, entry {m.pitEntryStart:0}-{m.pitEntryEnd:0}, exit {m.pitExitStart:0}-{m.pitExitEnd:0}";
+        m.boxOffsets = new float[teams];
+
+        if (d.garages != null && d.garages.Length >= teams * 3)
+        {
+            float sumSide = 0f;
+            var rawGLats = new float[teams];
+            float uMin = Mathf.Max(0f, inIdx * 2f - 4f);
+            float uMax = Mathf.Min(span, outIdx * 2f + 4f);
+            for (int t = 0; t < teams; t++)
+            {
+                Vector3 gw = B2U(d.garages, t * 3);
+                float uBest = uMin, bestSq = float.MaxValue;
+                for (float u = uMin; u <= uMax; u += 1f)
+                {
+                    float sd = Mathf.Repeat(startD + u, L);
+                    Vector3 pf = track.PointAt(sd) + track.RightAt(sd) * m.PitLat(sd);
+                    float dx = gw.x - pf.x, dz = gw.z - pf.z;
+                    float dSq = dx * dx + dz * dz;
+                    if (dSq < bestSq) { bestSq = dSq; uBest = u; }
+                }
+                float db = Mathf.Repeat(startD + uBest, L);
+                m.boxDistances[t] = db;
+                rawGLats[t] = track.LateralOffset(gw, db);
+                sumSide += rawGLats[t] - m.PitLat(db);
+            }
+            m.garageSide = sumSide >= 0f ? 1f : -1f;
+            float[] tryOffsets = { 2.45f, 2.15f, 1.85f, 1.55f };
+            var colHits = new Collider[8];
+            for (int t = 0; t < teams; t++)
+            {
+                float db = m.boxDistances[t];
+                float fLat = m.PitLat(db);
+                float maxShift = Mathf.Abs(rawGLats[t] - fLat) * 0.45f;
+                float chosen = fLat + m.garageSide * Mathf.Min(1.8f, maxShift);
+                foreach (float offTry in tryOffsets)
+                {
+                    float cLat = fLat + m.garageSide * Mathf.Min(offTry, maxShift);
+                    Vector3 wp = track.PointAt(db) + track.RightAt(db) * cLat;
+                    if (!RaceManager.GroundAt(wp, out float gy)) continue;
+                    wp.y = gy + 0.65f;
+                    int hc = Physics.OverlapSphereNonAlloc(wp, 1.0f, colHits, ~0, QueryTriggerInteraction.Ignore);
+                    bool hitWall = false;
+                    for (int k = 0; k < hc; k++) if (colHits[k].name.StartsWith("Barrier")) { hitWall = true; break; }
+                    if (!hitWall) { chosen = cLat; break; }
+                }
+                m.boxOffsets[t] = chosen;
+            }
+            return $"pit lane {span:0} m, offset {off:0.0} m, entry {m.pitEntryStart:0}-{m.pitEntryEnd:0}, exit {m.pitExitStart:0}-{m.pitExitEnd:0}, 11 garages aligned (side {m.garageSide:+0;-0})";
+        }
+        else
+        {
+            float a0 = (inIdx * 2f) + 25f, a1 = (outIdx * 2f) - 25f;
+            if (a1 < a0) { a0 = inIdx * 2f; a1 = outIdx * 2f; }
+            m.garageSide = off >= 0f ? 1f : -1f;
+            for (int t = 0; t < teams; t++)
+            {
+                float db = Mathf.Repeat(startD + Mathf.Lerp(a0, a1, (t + 0.5f) / teams), L);
+                m.boxDistances[t] = db;
+                m.boxOffsets[t] = m.PitLat(db);
+            }
+            return $"pit lane {span:0} m, offset {off:0.0} m, entry {m.pitEntryStart:0}-{m.pitEntryEnd:0}, exit {m.pitExitStart:0}-{m.pitExitEnd:0}";
+        }
     }
 
     // DRS zones from the pack where given, otherwise the two longest straights
@@ -1019,10 +1186,10 @@ public static class CircuitBuilder
     {
         var sun = new GameObject("Sun").AddComponent<Light>();
         sun.type = LightType.Directional;
-        sun.intensity = 1.6f;
-        sun.color = new Color(1f, 0.96f, 0.88f);
+        sun.intensity = 2.4f;
+        sun.color = new Color(1f, 0.97f, 0.91f);
         sun.shadows = LightShadows.Soft;
-        sun.shadowStrength = 0.85f;
+        sun.shadowStrength = 0.72f;
         sun.transform.rotation = Quaternion.Euler(38f, -35f, 0f);
         RenderSettings.sun = sun;
 
@@ -1032,39 +1199,107 @@ public static class CircuitBuilder
         sky.SetTexture("_MainTex", SkyTexture(-sun.transform.forward));
         sky.SetFloat("_Mapping", 1f);
         sky.SetFloat("_ImageType", 0f);
-        sky.SetFloat("_Exposure", 1.05f);
+        sky.SetFloat("_Exposure", 1.1f);
         sky.SetFloat("_Rotation", 0f);
-        EditorUtility.SetDirty(sky);        RenderSettings.skybox = sky;
-        RenderSettings.ambientMode = AmbientMode.Skybox;
-        RenderSettings.ambientIntensity = 1.05f;
+        EditorUtility.SetDirty(sky);
+        RenderSettings.skybox = sky;
+        RenderSettings.ambientMode = AmbientMode.Trilight;
+        RenderSettings.ambientSkyColor = new Color(0.62f, 0.74f, 0.92f);
+        RenderSettings.ambientEquatorColor = new Color(0.54f, 0.57f, 0.62f);
+        RenderSettings.ambientGroundColor = new Color(0.28f, 0.29f, 0.31f);
+        RenderSettings.defaultReflectionMode = DefaultReflectionMode.Custom;
+        RenderSettings.customReflectionTexture = GetOrBuildSkyReflectionCube(-sun.transform.forward);
+        RenderSettings.reflectionIntensity = 1.25f;
+
         RenderSettings.fog = true;
         RenderSettings.fogMode = FogMode.Linear;
-        RenderSettings.fogColor = new Color(0.68f, 0.76f, 0.86f);
         RenderSettings.fogColor = new Color(0.72f, 0.8f, 0.9f);
         RenderSettings.fogStartDistance = 250f;
         RenderSettings.fogEndDistance = 3200f;
         DynamicGI.UpdateEnvironment();
 
-        // Post-processing: filmic tonemapping, gentle bloom, a little warmth and contrast
+        // Post-processing: ACES filmic + lifted exposure for bright daytime reflections
         var volGo = new GameObject("PostProcess");
         volGo.transform.SetParent(root.transform, false);
         var vol = volGo.AddComponent<Volume>();
         vol.isGlobal = true;
         string profPath = GenDir + "/CircuitPost.asset";
-        var prof = AssetDatabase.LoadAssetAtPath<VolumeProfile>(profPath);
-        if (prof == null)
-        {
-            prof = ScriptableObject.CreateInstance<VolumeProfile>();
-            AssetDatabase.CreateAsset(prof, profPath);
-            var tm = prof.Add<Tonemapping>(true); tm.mode.Override(TonemappingMode.ACES);
-            var bl = prof.Add<Bloom>(true); bl.intensity.Override(0.35f); bl.threshold.Override(1.1f); bl.scatter.Override(0.6f);
-            var ca = prof.Add<ColorAdjustments>(true); ca.postExposure.Override(0.15f); ca.contrast.Override(12f); ca.saturation.Override(8f);
-            var wb = prof.Add<WhiteBalance>(true); wb.temperature.Override(6f);
-            var vg = prof.Add<Vignette>(true); vg.intensity.Override(0.2f); vg.smoothness.Override(0.45f);
-            foreach (var c in prof.components) { c.name = c.GetType().Name; AssetDatabase.AddObjectToAsset(c, prof); }
-            AssetDatabase.SaveAssets();
-        }
+        AssetDatabase.DeleteAsset(profPath);
+        var prof = ScriptableObject.CreateInstance<VolumeProfile>();
+        AssetDatabase.CreateAsset(prof, profPath);
+        var tm = prof.Add<Tonemapping>(true); tm.mode.Override(TonemappingMode.ACES);
+        var bl = prof.Add<Bloom>(true); bl.intensity.Override(0.25f); bl.threshold.Override(1.15f); bl.scatter.Override(0.55f);
+        var ca = prof.Add<ColorAdjustments>(true); ca.postExposure.Override(0.30f); ca.contrast.Override(14f); ca.saturation.Override(10f);
+        var wb = prof.Add<WhiteBalance>(true); wb.temperature.Override(4f);
+        var vg = prof.Add<Vignette>(true); vg.intensity.Override(0.14f); vg.smoothness.Override(0.50f);
+        foreach (var c in prof.components) { c.name = c.GetType().Name; AssetDatabase.AddObjectToAsset(c, prof); }
+        AssetDatabase.SaveAssets();
         vol.sharedProfile = prof;
+    }
+
+    public static Cubemap GetOrBuildSkyReflectionCube(Vector3 sunDir)
+    {
+        EnsureFolder(GenDir);
+        string cubePath = GenDir + "/SkyReflectionCube.asset";
+        if (skyCubeBuiltThisSession)
+        {
+            var cached = AssetDatabase.LoadAssetAtPath<Cubemap>(cubePath);
+            if (cached != null) return cached;
+        }
+        AssetDatabase.DeleteAsset(cubePath);
+
+        int size = 128;
+        var cube = new Cubemap(size, TextureFormat.RGBAHalf, true) { name = "SkyReflectionCube" };
+        sunDir = sunDir.sqrMagnitude > 0.01f ? sunDir.normalized : new Vector3(0.4f, 0.7f, -0.4f).normalized;
+        Color zenith = new Color(0.22f, 0.48f, 0.90f);
+        Color horizon = new Color(0.76f, 0.85f, 0.96f);
+        Color ground = new Color(0.32f, 0.34f, 0.36f);
+        Color sunCol = new Color(1.0f, 0.92f, 0.74f);
+
+        Color SampleDir(Vector3 dir)
+        {
+            dir.Normalize();
+            if (dir.y < 0f) return Color.Lerp(horizon * 0.72f, ground, Mathf.Clamp01(-dir.y * 3.5f));
+            Color c = Color.Lerp(horizon, zenith, Mathf.Pow(dir.y, 0.45f));
+            float sd = Mathf.Max(0f, Vector3.Dot(dir, sunDir));
+            c += sunCol * (Mathf.Pow(sd, 10f) * 0.35f + Mathf.Pow(sd, 140f) * 2.2f);
+            float cloudBand = Mathf.SmoothStep(0.05f, 0.35f, dir.y) * (0.5f + 0.5f * Mathf.Sin(dir.x * 5f + dir.z * 3.7f));
+            c = Color.Lerp(c, new Color(0.95f, 0.96f, 0.98f), cloudBand * 0.22f);
+            return c;
+        }
+
+        foreach (CubemapFace face in Enum.GetValues(typeof(CubemapFace)))
+        {
+            if (face == CubemapFace.Unknown) continue;
+            var cols = new Color[size * size];
+            for (int y = 0; y < size; y++)
+            {
+                float v = 1f - 2f * ((y + 0.5f) / size);
+                for (int x = 0; x < size; x++)
+                {
+                    float u = 2f * ((x + 0.5f) / size) - 1f;
+                    Vector3 d;
+                    switch (face)
+                    {
+                        case CubemapFace.PositiveX: d = new Vector3(1f, v, -u); break;
+                        case CubemapFace.NegativeX: d = new Vector3(-1f, v, u); break;
+                        case CubemapFace.PositiveY: d = new Vector3(u, 1f, -v); break;
+                        case CubemapFace.NegativeY: d = new Vector3(u, -1f, v); break;
+                        case CubemapFace.PositiveZ: d = new Vector3(u, v, 1f); break;
+                        default:                    d = new Vector3(-u, v, -1f); break;
+                    }
+                    Color col = SampleDir(d);
+                    col.a = 1f;
+                    cols[y * size + x] = col;
+                }
+            }
+            cube.SetPixels(cols, face);
+        }
+        cube.Apply(true, false);
+        AssetDatabase.CreateAsset(cube, cubePath);
+        AssetDatabase.SaveAssets();
+        skyCubeBuiltThisSession = true;
+        return cube;
     }
 
     // Panoramic daytime sky: deep blue zenith, pale hazy horizon, warm glow round the sun, fbm cumulus clouds
@@ -1195,6 +1430,12 @@ public static class CircuitBuilder
         ConfigureF1(f1, car.GetComponent<CarGeometry>());
         CreateSparks(car);
         car.AddComponent<CarHUD>().car = f1;
+        var swScreen = FindDeep(car.transform, "SteeringWheel_Screen");
+        if (swScreen != null && swScreen.GetComponent<SteeringWheelDisplay>() == null)
+        {
+            var disp = swScreen.gameObject.AddComponent<SteeringWheelDisplay>();
+            disp.car = f1;
+        }
         var audio = new GameObject("EngineAudio");
         audio.transform.SetParent(car.transform, false);
         audio.AddComponent<AudioSource>();
@@ -1241,19 +1482,23 @@ public static class CircuitBuilder
         var go = new GameObject("Main Camera") { tag = "MainCamera" };
         var cam = go.AddComponent<Camera>();
         go.AddComponent<AudioListener>();
-        cam.nearClipPlane = 0.1f;
+        cam.nearClipPlane = 0.06f;
         cam.farClipPlane = 4000f;
         var camData = cam.GetUniversalAdditionalCameraData();
         camData.renderPostProcessing = true;
         camData.antialiasing = AntialiasingMode.SubpixelMorphologicalAntiAliasing;
         var follow = go.AddComponent<ChaseCamera>();
         follow.target = player.transform;
-        // TV pod above the airbox, cockpit at the driver's eyes (2026 car proportions)
+        // TV pod above the airbox, cockpit geometrically aligned behind SteeringWheel_Pivot
         var geo = player.GetComponent<CarGeometry>();
         float headZ = geo != null ? geo.headZ : -0.2f, headY = geo != null ? geo.headY : 0.95f;
         follow.tvPodOffset = new Vector3(0, headY + 0.42f, headZ - 0.2f);
         follow.tvPodPitch = 8f;
-        follow.cockpitOffset = new Vector3(0, headY + 0.03f, headZ + 0.12f);
+        var swPivot = FindDeep(player.transform, "SteeringWheel_Pivot");
+        Vector3 sw = swPivot != null ? player.transform.InverseTransformPoint(swPivot.position)
+                   : (geo != null ? geo.steeringWheelLocalPos : new Vector3(0f, 0.648f, 0.56f));
+        follow.cockpitOffset = new Vector3(0f, sw.y + 0.145f, sw.z - 0.50f);
+        follow.cockpitPitch = 4.5f;
         follow.distance = 5.6f;
         follow.height = 1.45f;
         follow.view = ChaseCamera.View.Chase;
@@ -1324,6 +1569,211 @@ public static class CircuitBuilder
         r.velocityScale = 0.04f;
         r.lengthScale = 1.5f;
         r.sharedMaterial = SparkMaterial();
+    }
+
+    public static void RenderUnityVerificationScreenshots()
+    {
+        const string bakuPath = "Assets/Scenes/Final/Final Circuit Baku.unity";
+        if (!File.Exists(bakuPath)) return;
+        EditorSceneManager.OpenScene(bakuPath, OpenSceneMode.Single);
+
+        var player = GameObject.Find("F1_Player");
+        var cam = Camera.main;
+        if (player == null || cam == null) return;
+
+        var lod = player.GetComponent<LODGroup>();
+        if (lod != null) lod.ForceLOD(0);
+
+        // Apply copyright-safe 4K ORBITAL livery (02) + Soft tyres + live telemetry onto OLED display
+        RaceManager.ApplyLivery(player, Color.white, Color.white, Color.yellow, 2);
+        var softTyre = Resources.Load<Material>("F1Tyres/Tyre_Soft");
+        if (softTyre != null)
+            foreach (var mr in player.GetComponentsInChildren<Renderer>(true))
+                if (mr.name.StartsWith("F1_Wheel")) mr.sharedMaterial = softTyre;
+
+        var disp = player.GetComponentInChildren<SteeringWheelDisplay>(true);
+        Material origScreenMat = null, tmpScreenMat = null;
+        Renderer dispRend = disp != null ? disp.GetComponent<Renderer>() : null;
+        if (dispRend != null && dispRend.sharedMaterial != null)
+        {
+            origScreenMat = dispRend.sharedMaterial;
+            tmpScreenMat = new Material(origScreenMat);
+            dispRend.sharedMaterial = tmpScreenMat;
+        }
+        if (disp != null)
+            disp.RenderTelemetry(4, 248, 0.84f, 0.82f, true, true, 3, 1, 93f);
+
+        var follow = cam.GetComponent<ChaseCamera>();
+        string outDir = @"C:\Users\USERAS\.gemini\antigravity\brain\9cf7120c-afb5-4b52-a65d-90ae4fdbb68f\scratch";
+        Directory.CreateDirectory(outDir);
+
+        var rt = new RenderTexture(1280, 720, 24, RenderTextureFormat.ARGB32) { antiAliasing = 4 };
+        cam.targetTexture = rt;
+
+        void Snap(string fileName)
+        {
+            cam.Render();
+            RenderTexture.active = rt;
+            var tex = new Texture2D(1280, 720, TextureFormat.RGB24, false);
+            tex.ReadPixels(new Rect(0, 0, 1280, 720), 0, 0);
+            tex.Apply();
+            File.WriteAllBytes(Path.Combine(outDir, fileName), tex.EncodeToPNG());
+            Object.DestroyImmediate(tex);
+        }
+
+        // 1. Cockpit View (hide F1_Cockpit_Driver just like runtime ChaseCamera)
+        var hidden = new List<Renderer>();
+        foreach (var mr in player.GetComponentsInChildren<Renderer>(true))
+            if (mr.name.StartsWith("F1_Cockpit_Driver") && mr.enabled) { mr.enabled = false; hidden.Add(mr); }
+
+        Vector3 cockOff = follow != null ? follow.cockpitOffset : new Vector3(0f, 0.793f, 0.06f);
+        float cockPitch = follow != null ? follow.cockpitPitch : 4.5f;
+        cam.transform.position = player.transform.TransformPoint(cockOff);
+        cam.transform.rotation = player.transform.rotation * Quaternion.Euler(cockPitch, 0f, 0f);
+        cam.fieldOfView = follow != null ? follow.baseFov + 4f : 66f;
+        Snap("unity_verify_cockpit.png");
+
+        foreach (var mr in hidden) mr.enabled = true;
+
+        // 2. Chase View (rear ORBITAL DRS flap, exhaust, rain light, glossy reflections)
+        cam.transform.position = player.transform.TransformPoint(new Vector3(0.4f, 1.55f, -4.6f));
+        cam.transform.LookAt(player.transform.TransformPoint(new Vector3(0f, 0.58f, 0.5f)));
+        cam.fieldOfView = 58f;
+        Snap("unity_verify_chase.png");
+
+        // 3. Front-Left Hero View (bright daytime lighting, 4K ORBITAL livery, glossy car + XPARROW Soft tyres)
+        cam.transform.position = player.transform.TransformPoint(new Vector3(-3.2f, 1.32f, 3.85f));
+        cam.transform.LookAt(player.transform.TransformPoint(new Vector3(0f, 0.48f, 0.1f)));
+        cam.fieldOfView = 42f;
+        Snap("unity_verify_front.png");
+
+        cam.targetTexture = null;
+        RenderTexture.active = null;
+        Object.DestroyImmediate(rt);
+        if (dispRend != null && origScreenMat != null)
+        {
+            dispRend.sharedMaterial = origScreenMat;
+            Object.DestroyImmediate(tmpScreenMat);
+        }
+        Debug.Log("Rendered 3 Unity URP verification screenshots cleanly to scratch/");
+    }
+
+    public static void PitLaneVerifyTest()
+    {
+        var sb = new System.Text.StringBuilder("PIT LANE GARAGE & STOP/EXIT VERIFICATION:\n");
+        bool allOk = true;
+        foreach (var t in GameSession.Tracks)
+        {
+            string p = SceneDir + "/" + t.scene + ".unity";
+            if (!File.Exists(p)) { allOk = false; sb.AppendLine($"  [FAIL] {t.id}: scene missing"); continue; }
+            EditorSceneManager.OpenScene(p, OpenSceneMode.Single);
+            var rm = Object.FindFirstObjectByType<RaceManager>();
+            if (rm == null || rm.boxDistances == null || rm.boxDistances.Length < 11 || rm.boxOffsets == null || rm.boxOffsets.Length < 11)
+            {
+                allOk = false;
+                sb.AppendLine($"  [FAIL] {t.id}: missing boxDistances/boxOffsets");
+                continue;
+            }
+            int grounded = 0;
+            for (int i = 0; i < 11; i++)
+            {
+                Vector3 bp = rm.track.PointAt(rm.boxDistances[i]) + rm.track.RightAt(rm.boxDistances[i]) * rm.boxOffsets[i];
+                if (RaceManager.GroundAt(bp, out _)) grounded++;
+            }
+            bool ok = grounded == 11;
+            if (!ok) allOk = false;
+            sb.AppendLine($"  [{(ok ? "PASS" : "FAIL")}] {t.id}: 11 boxes aligned (side {rm.garageSide:+0;-0}, bay0={rm.boxDistances[0]:0}m@{rm.boxOffsets[0]:0.0}m, bay10={rm.boxDistances[10]:0}m@{rm.boxOffsets[10]:0.0}m, grounded={grounded}/11)");
+        }
+
+        // Full Pit Entry -> Red Bull Garage Stop + Wing Repair -> Pit Exit Simulation & Render on Baku
+        string bakuPath = SceneDir + "/Final Circuit Baku.unity";
+        EditorSceneManager.OpenScene(bakuPath, OpenSceneMode.Single);
+        var manager = Object.FindFirstObjectByType<RaceManager>();
+        var player = GameObject.Find("F1_Player");
+        var f1 = player != null ? player.GetComponent<F1Car>() : null;
+        var cam = Camera.main;
+        if (manager != null && player != null && f1 != null && cam != null)
+        {
+            var lod = player.GetComponent<LODGroup>();
+            if (lod != null) lod.ForceLOD(0);
+            RaceManager.ApplyLivery(player, GameSession.Teams[1].primary, GameSession.Teams[1].secondary, Color.yellow, GameSession.Teams[1].livery);
+            f1.Init();
+            f1.ForceBreakFrontWingForTest();
+            bool brokeWing = f1.FrontWingLost;
+
+            float entryD = Mathf.Repeat(manager.pitEntryStart + 4f, manager.track.length);
+            manager.BuildPitCrews();
+            manager.StartTestPitStop(1, entryD, manager.PitLat(entryD), false);
+
+            string outDir = @"C:\Users\USERAS\.gemini\antigravity\brain\9cf7120c-afb5-4b52-a65d-90ae4fdbb68f\scratch";
+            Directory.CreateDirectory(outDir);
+            var rt = new RenderTexture(1280, 720, 24, RenderTextureFormat.ARGB32) { antiAliasing = 4 };
+            cam.targetTexture = rt;
+            void Snap(string fn)
+            {
+                cam.Render();
+                RenderTexture.active = rt;
+                var tex = new Texture2D(1280, 720, TextureFormat.RGB24, false);
+                tex.ReadPixels(new Rect(0, 0, 1280, 720), 0, 0);
+                tex.Apply();
+                File.WriteAllBytes(Path.Combine(outDir, fn), tex.EncodeToPNG());
+                Object.DestroyImmediate(tex);
+            }
+
+            bool pitStopSnapped = false, pitExitSnapped = false;
+            int barrierHitsDuringPit = 0;
+            var hitCols = new Collider[8];
+            for (int step = 0; step < 2500 && manager.PlayerInPit; step++)
+            {
+                manager.StepTestPitFixed(0.02f);
+
+                // Check barrier clearance along pit exit corridor
+                Vector3 probe = player.transform.position + Vector3.up * 0.65f;
+                int hc = Physics.OverlapSphereNonAlloc(probe, 0.85f, hitCols, ~0, QueryTriggerInteraction.Ignore);
+                for (int k = 0; k < hc; k++)
+                {
+                    if (!hitCols[k].name.StartsWith("Barrier")) continue;
+                    barrierHitsDuringPit++;
+                    if (barrierHitsDuringPit <= 5)
+                        Debug.Log($"[PitBarrier] step={step} {manager.PitDebugState} col={hitCols[k].name} pos={player.transform.position}");
+                }
+
+                // Snap dramatic pit stop view when stopped in front of Red Bull garage & wing crew is mounting new wing!
+                if (!pitStopSnapped && f1.SpeedKmh < 0.5f && step > 100)
+                {
+                    pitStopSnapped = true;
+                    var box = manager.pitBoxes[1];
+                    box.PreviewServiceAt(1.45f, 4.7f, true);
+                    Vector3 gVec = player.transform.right * -manager.garageSide;
+                    cam.transform.position = player.transform.position + player.transform.forward * 5.6f + gVec * 4.8f + Vector3.up * 2.4f;
+                    cam.transform.LookAt(player.transform.position + Vector3.up * 0.85f + player.transform.forward * 0.3f);
+                    cam.fieldOfView = 45f;
+                    Snap("unity_verify_pitstop.png");
+                }
+
+                if (pitStopSnapped && !pitExitSnapped && f1.SpeedKmh > 95f && !f1.FrontWingLost)
+                {
+                    pitExitSnapped = true;
+                    cam.transform.position = player.transform.TransformPoint(new Vector3(0.8f, 2.2f, -6.2f));
+                    cam.transform.LookAt(player.transform.TransformPoint(new Vector3(0f, 0.7f, 4.5f)));
+                    cam.fieldOfView = 56f;
+                    Snap("unity_verify_pitexit.png");
+                }
+            }
+
+            cam.targetTexture = null;
+            RenderTexture.active = null;
+            Object.DestroyImmediate(rt);
+
+            var rb = player.GetComponent<Rigidbody>();
+            bool handoffOk = !manager.PlayerInPit && !rb.isKinematic && !f1.FrontWingLost && brokeWing && f1.SpeedKmh > 90f && f1.Gear >= 2 && barrierHitsDuringPit == 0;
+            if (!handoffOk) allOk = false;
+            sb.AppendLine($"  [{(handoffOk ? "PASS" : "FAIL")}] Baku full pit stop + wing repair + exit: broke={brokeWing}, repaired={!f1.FrontWingLost}, handoffSpeed={f1.SpeedKmh:0}km/h (gear {f1.Gear}), barrierHits={barrierHitsDuringPit}, shots={pitStopSnapped}/{pitExitSnapped}");
+        }
+        else { allOk = false; sb.AppendLine("  [FAIL] Missing Baku objects for PitLaneVerifyTest"); }
+
+        if (allOk) Debug.Log("PitLaneVerifyTest PASSED:\n" + sb);
+        else Debug.LogError("PitLaneVerifyTest FAILED:\n" + sb);
     }
 
     static Material SparkMaterial()
