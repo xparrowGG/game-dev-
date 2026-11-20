@@ -105,8 +105,8 @@ public class PitBox : MonoBehaviour
             var on = Add(Role.TyreOn, c, new Vector3(w.x + sx * 0.75f, 0, w.z - front * 0.55f), new Vector3(w.x + sx * 2.2f, 0, w.z - front * 0.2f), new Vector3(homeX, 0, w.z - front * 0.8f));
 
             // Tyres: the old set (shown while it comes off) and the new set (carried in by the tyre-on man)
-            oldTyre[c] = Tyre(rubber);
-            newTyre[c] = Tyre(rubber);
+            oldTyre[c] = Tyre(rubber, c < 2);
+            newTyre[c] = Tyre(rubber, c < 2);
             newTyre[c].gameObject.SetActive(false);
             oldTyre[c].gameObject.SetActive(false);
         }
@@ -124,14 +124,54 @@ public class PitBox : MonoBehaviour
         Part(PrimitiveType.Cube, transform, new Vector3(0, 0.012f, 3.0f), new Vector3(2.2f, 0.01f, 0.12f), paint);
         Part(PrimitiveType.Cube, transform, new Vector3(-1.9f, 0.012f, 0), new Vector3(0.12f, 0.01f, 6f), Mat(primary, 0.2f));
         Part(PrimitiveType.Cube, transform, new Vector3(1.9f, 0.012f, 0), new Vector3(0.12f, 0.01f, 6f), Mat(primary, 0.2f));
+
+        var propsPrefab = Resources.Load<GameObject>("F1Tyres/PitProps_Cluster");
+        if (propsPrefab != null)
+        {
+            var props = Instantiate(propsPrefab, transform);
+            props.name = "PitProps";
+            props.transform.localPosition = new Vector3(gx * 5.0f, 0f, -2.0f);
+            props.transform.localRotation = Quaternion.Euler(0f, gx > 0f ? -90f : 90f, 0f);
+            foreach (var col in props.GetComponentsInChildren<Collider>(true))
+                if (Application.isPlaying) Destroy(col); else DestroyImmediate(col);
+        }
     }
 
-    Transform Tyre(Material rubber)
+    Transform Tyre(Material rubber, bool front)
     {
+        var prefab = Resources.Load<GameObject>(front ? "F1Tyres/PitTyre_Front" : "F1Tyres/PitTyre_Rear");
+        if (prefab != null)
+        {
+            var inst = Instantiate(prefab, transform);
+            inst.name = front ? "PitTyre_F" : "PitTyre_R";
+            foreach (var col in inst.GetComponentsInChildren<Collider>(true))
+                if (Application.isPlaying) Destroy(col); else DestroyImmediate(col);
+            return inst.transform;
+        }
         var t = Part(PrimitiveType.Cylinder, transform, Vector3.zero, new Vector3(0.72f, 0.185f, 0.72f), rubber, Quaternion.Euler(0, 0, 90));
         var rim = Part(PrimitiveType.Cylinder, t, Vector3.zero, new Vector3(0.62f, 1.02f, 0.62f), Mat(new Color(0.12f, 0.12f, 0.13f), 0.7f));
         rim.name = "Rim";
         return t;
+    }
+
+    public void SetCompounds(Compound current, Compound next)
+    {
+        ApplyTyreMat(oldTyre, Resources.Load<Material>("F1Tyres/Tyre_" + Tyres.Names[(int)current]));
+        ApplyTyreMat(newTyre, Resources.Load<Material>("F1Tyres/Tyre_" + Tyres.Names[(int)next]));
+    }
+
+    static void ApplyTyreMat(Transform[] list, Material mat)
+    {
+        if (mat == null) return;
+        foreach (var t in list)
+        {
+            if (t == null) continue;
+            foreach (var r in t.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r.name == "Rim") continue;
+                r.sharedMaterial = mat;
+            }
+        }
     }
 
     // ---------- Control (called by the race manager) ----------

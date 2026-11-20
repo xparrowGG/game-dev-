@@ -13,9 +13,20 @@ public static class CircuitDriveTest
     [MenuItem("Tools/XPARROW/Debug/Auto-drive Lap (open circuit)")]
     public static void Run()
     {
+        RunOpenScene(out _);
+    }
+
+    public static bool RunForScene(string scenePath, out string summary)
+    {
+        EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Single);
+        return RunOpenScene(out summary);
+    }
+
+    public static bool RunOpenScene(out string summary)
+    {
         var scene = EditorSceneManager.GetActiveScene();
         var manager = Object.FindFirstObjectByType<RaceManager>();
-        if (manager == null) { Debug.LogError("Open a circuit scene first"); return; }
+        if (manager == null) { summary = "Open a circuit scene first"; Debug.LogError(summary); return false; }
         var track = manager.track;
         var car = manager.player as F1Car;
         var log = new StringBuilder($"DRIVE TEST {scene.name}: lap {track.length:0} m\n");
@@ -53,6 +64,8 @@ public static class CircuitDriveTest
         // 2. Autopilot lap
         var prevMode = Physics.simulationMode;
         Physics.simulationMode = SimulationMode.Script;
+        float travelled = 0f;
+        int falls = 0;
         try
         {
             car.Init();
@@ -63,8 +76,8 @@ public static class CircuitDriveTest
             Vector3 start = track.PointAt(d0) + track.RightAt(d0) * -2.4f;
             if (RaceManager.GroundAt(start, out float sy)) start.y = sy + 0.1f;
             car.Teleport(start, Quaternion.LookRotation(track.TangentAt(d0)));
-            float t = 0, prevD = Mathf.Repeat(d0, track.length), travelled = 0, maxDrop = 0;
-            int falls = 0, airborne = 0, offTrack = 0;
+            float t = 0, prevD = Mathf.Repeat(d0, track.length), maxDrop = 0;
+            int airborne = 0, offTrack = 0;
             string events = "";
             while (t < 260f && travelled < track.length + 20f)
             {
@@ -95,7 +108,7 @@ public static class CircuitDriveTest
                 t += Dt;
 
                 float lat = track.LateralOffset(car.transform.position, d);
-                if (Mathf.Abs(lat) > track.halfWidth + 3f) offTrack++;
+                if (Mathf.Abs(lat) > track.HalfWidthAt(d) + 3f) offTrack++;
                 bool hasGround = RaceManager.GroundAt(car.transform.position, out float g);
                 float drop = track.PointAt(d).y - car.transform.position.y;
                 maxDrop = Mathf.Max(maxDrop, drop);
@@ -114,9 +127,11 @@ public static class CircuitDriveTest
         {
             Physics.simulationMode = prevMode;
         }
-        Debug.Log(log.ToString());
+        summary = log.ToString();
+        Debug.Log(summary);
         // Throw away the test changes
-        EditorSceneManager.OpenScene(scene.path);
+        if (!string.IsNullOrEmpty(scene.path)) EditorSceneManager.OpenScene(scene.path);
+        return missing == 0 && falls == 0 && travelled >= track.length * 0.98f;
     }
 
     // What is under a point: every collider hit by a long ray from above

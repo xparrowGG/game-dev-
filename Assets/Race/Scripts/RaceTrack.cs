@@ -6,12 +6,23 @@ using UnityEngine;
 public class RaceTrack : MonoBehaviour
 {
     public Vector3[] points;
+    public float[] halfWidths;
     public float spacing = 2f;
     public float length;
     public float halfWidth = 7f;
     public string trackName = "Circuit";
 
     public int Count => points.Length;
+
+    public float HalfWidthAt(float d)
+    {
+        if (halfWidths == null || halfWidths.Length != points.Length || points.Length == 0)
+            return halfWidth;
+        d = Mathf.Repeat(d, length);
+        float f = d / spacing;
+        int i = Mathf.FloorToInt(f) % Count;
+        return Mathf.Lerp(halfWidths[i], halfWidths[(i + 1) % Count], f - Mathf.Floor(f));
+    }
 
     public Vector3 PointAt(float d)
     {
@@ -87,5 +98,24 @@ public class RaceTrack : MonoBehaviour
         a.y = 0; b.y = 0;
         float angle = Vector3.Angle(a, b) * Mathf.Deg2Rad;
         return angle < 0.001f ? 10000f : 12f / angle;
+    }
+
+    // Signed outside-apex-outside racing line lateral offset (positive = right).
+    public float RacingLineOffsetAt(float d)
+    {
+        float apex = SignedTurn(d, 14f);
+        float ahead = SignedTurn(d + 34f, 18f);
+        float behind = SignedTurn(d - 34f, 18f);
+        float raw = apex - 0.5f * (ahead + behind);
+        float norm = raw / (1f + Mathf.Abs(raw));
+        float usable = Mathf.Max(0f, HalfWidthAt(d) - 1.7f);
+        return Mathf.Clamp(norm * usable * 0.85f, -usable, usable);
+    }
+
+    float SignedTurn(float d, float halfSpan)
+    {
+        Vector3 a = TangentAt(d - halfSpan); a.y = 0;
+        Vector3 b = TangentAt(d + halfSpan); b.y = 0;
+        return Vector3.SignedAngle(a, b, Vector3.up) / 28f;
     }
 }

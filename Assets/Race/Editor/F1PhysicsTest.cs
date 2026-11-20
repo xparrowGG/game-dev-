@@ -22,9 +22,16 @@ public static class F1PhysicsTest
             pad.transform.position = new Vector3(0, -5000.5f, 0);
             pad.transform.localScale = new Vector3(30000, 1, 30000);
 
-            carGo = F1ModelBuilder.Build("PhysicsTestCar");
+            carGo = CircuitBuilder.InstantiateCar("PhysicsTestCar");
+            var geo = carGo.GetComponent<CarGeometry>();
             carGo.AddComponent<Rigidbody>();
             var car = carGo.AddComponent<F1Car>();
+            if (geo != null)
+            {
+                car.frontAxleZ = geo.frontAxleZ; car.rearAxleZ = geo.rearAxleZ;
+                car.frontTrack = geo.frontTrack; car.rearTrack = geo.rearTrack;
+                car.tyreRadius = geo.tyreRadius;
+            }
             car.Init();
             car.externalInput = true;
             var rb = carGo.GetComponent<Rigidbody>();

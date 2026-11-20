@@ -87,12 +87,13 @@ public class TrackInfo
     public float lengthKm;
     public int corners;
     public string preview;                // Resources image shown in the menu
+    public string turn1Name;
 }
 
 public static class GameSession
 {
     public const string GameTitle = "XPARROW F1 GP";
-    public const string MenuScene = "Main Menu";
+    public const string MenuScene = "Final Main Menu";
     public static readonly int[] Points = { 25, 18, 15, 12, 10, 8, 6, 4, 2, 1 };
     public static readonly string[] DifficultyNames = { "Easy", "Medium", "Hard" };
     public static readonly float[] DifficultySkill = { 0.88f, 0.96f, 1.03f };
@@ -100,14 +101,14 @@ public static class GameSession
     public const int MaxUpgrade = 5;
     public static bool StartedFromMenu;   // the race scene sends you to the menu if opened directly
 
-    // The five circuits of the asset pack (each has its own scene, built by Tools/XPARROW/Build Circuit Scenes)
+    // The five circuits of the asset pack (each has its own Final scene, built by Tools/XPARROW/Build FINAL Game)
     public static readonly TrackInfo[] Tracks =
     {
-        new TrackInfo { id = "Monaco", scene = "Circuit Monaco", name = "Circuit de Monaco",                  grandPrix = "Monaco Grand Prix",     country = "Monaco",     lengthKm = 3.337f, corners = 19, preview = "F1UI/Track_Monaco" },
-        new TrackInfo { id = "Baku",   scene = "Circuit Baku",   name = "Baku City Circuit",                  grandPrix = "Azerbaijan Grand Prix", country = "Azerbaijan", lengthKm = 6.003f, corners = 20, preview = "F1UI/Track_Baku" },
-        new TrackInfo { id = "Monza",  scene = "Circuit Monza",  name = "Autodromo Nazionale Monza",          grandPrix = "Italian Grand Prix",    country = "Italy",      lengthKm = 5.793f, corners = 11, preview = "F1UI/Track_Monza" },
-        new TrackInfo { id = "Spa",    scene = "Circuit Spa",    name = "Circuit de Spa-Francorchamps",       grandPrix = "Belgian Grand Prix",    country = "Belgium",    lengthKm = 7.004f, corners = 19, preview = "F1UI/Track_Spa" },
-        new TrackInfo { id = "Suzuka", scene = "Circuit Suzuka", name = "Suzuka International Racing Course", grandPrix = "Japanese Grand Prix",   country = "Japan",      lengthKm = 5.807f, corners = 18, preview = "F1UI/Track_Suzuka" },
+        new TrackInfo { id = "Monaco", scene = "Final Circuit Monaco", name = "Circuit de Monaco",                  grandPrix = "Monaco Grand Prix",     country = "Monaco",     lengthKm = 3.337f, corners = 19, preview = "F1UI/Track_Monaco", turn1Name = "Sainte Devote" },
+        new TrackInfo { id = "Baku",   scene = "Final Circuit Baku",   name = "Baku City Circuit",                  grandPrix = "Azerbaijan Grand Prix", country = "Azerbaijan", lengthKm = 6.003f, corners = 20, preview = "F1UI/Track_Baku",   turn1Name = "Turn 1" },
+        new TrackInfo { id = "Monza",  scene = "Final Circuit Monza",  name = "Autodromo Nazionale Monza",          grandPrix = "Italian Grand Prix",    country = "Italy",      lengthKm = 5.793f, corners = 11, preview = "F1UI/Track_Monza",  turn1Name = "Prima Variante" },
+        new TrackInfo { id = "Spa",    scene = "Final Circuit Spa",    name = "Circuit de Spa-Francorchamps",       grandPrix = "Belgian Grand Prix",    country = "Belgium",    lengthKm = 7.004f, corners = 19, preview = "F1UI/Track_Spa",    turn1Name = "La Source" },
+        new TrackInfo { id = "Suzuka", scene = "Final Circuit Suzuka", name = "Suzuka International Racing Course", grandPrix = "Japanese Grand Prix",   country = "Japan",      lengthKm = 5.807f, corners = 18, preview = "F1UI/Track_Suzuka", turn1Name = "Turn 1" },
     };
     // Career calendar (indices into Tracks)
     public static readonly int[] Calendar = { 0, 1, 2, 3, 4 };

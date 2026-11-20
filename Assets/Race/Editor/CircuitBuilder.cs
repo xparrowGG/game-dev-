@@ -997,7 +997,7 @@ public static class CircuitBuilder
         car.AddComponent<Rigidbody>();
         var f1 = car.AddComponent<F1Car>();
         ConfigureF1(f1, car.GetComponent<CarGeometry>());
-        RaceTrackBuilder.CreateSparks(car);
+        CreateSparks(car);
         car.AddComponent<CarHUD>().car = f1;
         var audio = new GameObject("EngineAudio");
         audio.transform.SetParent(car.transform, false);
@@ -1089,5 +1089,64 @@ public static class CircuitBuilder
             if (AssetDatabase.IsValidFolder(folder) && AssetDatabase.MoveAssetToTrash(folder)) removed.Add(folder);
         SetBuildScenes();
         Debug.Log("Removed (moved to the Recycle Bin): " + (removed.Count > 0 ? string.Join(", ", removed) : "nothing found"));
+    }
+
+    public static void CreateSparks(GameObject car)
+    {
+        var go = new GameObject("Sparks");
+        go.transform.SetParent(car.transform, false);
+        var ps = go.AddComponent<ParticleSystem>();
+        ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+
+        var main = ps.main;
+        main.playOnAwake = false;
+        main.loop = false;
+        main.duration = 1f;
+        main.startLifetime = new ParticleSystem.MinMaxCurve(0.25f, 0.6f);
+        main.startSpeed = new ParticleSystem.MinMaxCurve(4f, 11f);
+        main.startSize = new ParticleSystem.MinMaxCurve(0.04f, 0.09f);
+        main.startColor = new ParticleSystem.MinMaxGradient(new Color(1f, 0.95f, 0.6f), new Color(1f, 0.55f, 0.1f));
+        main.gravityModifier = 1.5f;
+        main.simulationSpace = ParticleSystemSimulationSpace.World;
+        main.maxParticles = 400;
+
+        var emission = ps.emission;
+        emission.rateOverTime = 0f;
+        var shape = ps.shape;
+        shape.shapeType = ParticleSystemShapeType.Sphere;
+        shape.radius = 0.15f;
+        var fade = ps.colorOverLifetime;
+        fade.enabled = true;
+        var grad = new Gradient();
+        grad.SetKeys(new[] { new GradientColorKey(Color.white, 0f), new GradientColorKey(new Color(1f, 0.3f, 0.05f), 1f) },
+                     new[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(0f, 1f) });
+        fade.color = grad;
+
+        var r = go.GetComponent<ParticleSystemRenderer>();
+        r.renderMode = ParticleSystemRenderMode.Stretch;
+        r.velocityScale = 0.04f;
+        r.lengthScale = 1.5f;
+        r.sharedMaterial = SparkMaterial();
+    }
+
+    static Material SparkMaterial()
+    {
+        EnsureFolder(GenDir);
+        const string path = GenDir + "/Sparks.mat";
+        var m = AssetDatabase.LoadAssetAtPath<Material>(path);
+        if (m != null) return m;
+        var sh = Shader.Find("Universal Render Pipeline/Particles/Unlit") ?? Shader.Find("Particles/Standard Unlit");
+        m = new Material(sh);
+        if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", Color.white);
+        if (m.HasProperty("_Surface")) m.SetFloat("_Surface", 1f);
+        if (m.HasProperty("_Blend")) m.SetFloat("_Blend", 2f);
+        m.SetOverrideTag("RenderType", "Transparent");
+        m.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.One);
+        m.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.One);
+        m.SetInt("_ZWrite", 0);
+        m.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+        m.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+        AssetDatabase.CreateAsset(m, path);
+        return m;
     }
 }

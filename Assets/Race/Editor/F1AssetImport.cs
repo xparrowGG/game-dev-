@@ -21,7 +21,7 @@ public class F1AssetImport : AssetPostprocessor
         mi.materialImportMode = ModelImporterMaterialImportMode.ImportViaMaterialDescription;
         mi.materialLocation = ModelImporterMaterialLocation.InPrefab;
         mi.importNormals = ModelImporterNormals.Import;
-        mi.isReadable = assetPath.Contains("/Tracks/");
+        mi.isReadable = assetPath.Contains("/Tracks/") || assetPath.Contains("/Car/");
         mi.meshCompression = ModelImporterMeshCompression.Off;
     }
 

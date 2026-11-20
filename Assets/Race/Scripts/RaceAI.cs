@@ -43,9 +43,15 @@ public class RaceAI : MonoBehaviour
 
     static readonly float[] WideLanes = { -4.5f, -1.5f, 1.5f, 4.5f };
     static readonly float[] NarrowLanes = { -2.6f, 0f, 2.6f };
+    readonly float[] dynamicLanes = new float[3];
     Rigidbody rb;
-    Transform[] wheels = new Transform[4];
-    float laneTarget, wheelSpin;
+    readonly Transform[] steerWheels = new Transform[2];
+    readonly Transform[] spinWheels = new Transform[4];
+    Transform drsPivot;
+    Quaternion drsBaseRot;
+    Vector3 drsAxisLocal = Vector3.right;
+    float laneTarget, wheelSpin, visualSteer, drsAngle;
+    bool drsOpen, inSlipstream;
     float lateralVel, wobble, wobbleVel, recoverTimer;   // crash reaction
     float stopTime, stopElapsed;
 
@@ -53,8 +59,33 @@ public class RaceAI : MonoBehaviour
     {
         rb = GetComponent<Rigidbody>();
         rb.isKinematic = true;
-        string[] names = { "WheelFL", "WheelFR", "WheelRL", "WheelRR" };
-        for (int i = 0; i < 4; i++) wheels[i] = transform.Find("Wheels/" + names[i]);
+        Transform wRoot = transform.Find("Wheels");
+        string[] legacyNames = { "WheelFL", "WheelFR", "WheelRL", "WheelRR" };
+        string[] steerNames = { "SteerFL", "SteerFR" };
+        string[] spinNames = { "SpinFL", "SpinFR", "SpinRL", "SpinRR" };
+        for (int i = 0; i < 4; i++)
+        {
+            if (i < 2 && wRoot != null)
+            {
+                steerWheels[i] = wRoot.Find(steerNames[i]);
+                spinWheels[i] = steerWheels[i] != null ? steerWheels[i].Find(spinNames[i]) : wRoot.Find(legacyNames[i]);
+            }
+            else if (wRoot != null)
+            {
+                spinWheels[i] = wRoot.Find(spinNames[i]) ?? wRoot.Find(legacyNames[i]);
+            }
+        }
+        var body = transform.Find("Body");
+        if (body != null)
+        {
+            foreach (Transform t in body.GetComponentsInChildren<Transform>(true))
+                if (t.name == "DRS_Flap_Pivot") { drsPivot = t; break; }
+            if (drsPivot != null)
+            {
+                drsBaseRot = drsPivot.localRotation;
+                drsAxisLocal = drsPivot.InverseTransformDirection(transform.TransformDirection(Vector3.right)).normalized;
+            }
+        }
         laneTarget = lane;
     }
 
@@ -107,12 +138,15 @@ public class RaceAI : MonoBehaviour
     public void Step(float dt, bool racing, bool finished, float skill)
     {
         var track = manager.track;
-        bool narrow = track.halfWidth <= 6f;
+        float hw = track.HalfWidthAt(progress);
+        bool narrow = hw <= 6f;
         float desired = 0f;
         float laneSpeed = 2.5f;
-        float laneLimit = track.halfWidth - 1.4f;
+        float laneLimit = Mathf.Max(2.2f, hw - 1.4f);
         float d = Mathf.Repeat(progress, track.length);
         TyresOff = false;
+        drsOpen = false;
+        inSlipstream = false;
 
         if (finished && Pit == PitState.None)
         {
@@ -141,12 +175,36 @@ public class RaceAI : MonoBehaviour
             switch (Pit)
             {
                 case PitState.None:
+                {
                     desired = RacingSpeed(skill, track);
-                    desired = Mathf.Min(desired, AvoidTraffic(narrow ? NarrowLanes : WideLanes));
+                    if (!narrow)
+                    {
+                        float usable = Mathf.Max(2.2f, hw - 2.2f);
+                        dynamicLanes[0] = -usable; dynamicLanes[1] = 0f; dynamicLanes[2] = usable;
+                    }
+                    float trafficLimit = AvoidTraffic(narrow ? NarrowLanes : dynamicLanes, out bool blocked);
+                    if (!blocked && racing && !finished)
+                    {
+                        laneTarget = track.RacingLineOffsetAt(progress);
+                        laneSpeed = 3.2f;
+                    }
+                    bool hasAheadDrs = false;
+                    foreach (var r in manager.racers)
+                    {
+                        if (r.ai == this || r.retired) continue;
+                        if (r.ai != null && (!r.ai.gameObject.activeSelf || r.ai.Pit != PitState.None)) continue;
+                        float dp = r.progress - progress;
+                        if (dp > 0f && dp < Speed * 1.0f && lap >= 2) hasAheadDrs = true;
+                        if (dp > 4f && dp < 28f && Mathf.Abs(r.lateral - lane) < 2.6f && Speed > 25f) inSlipstream = true;
+                    }
+                    drsOpen = racing && !finished && manager.InDrsZone(d) && Speed > 35f && track.RadiusAt(progress) > 250f && hasAheadDrs;
+                    desired *= (drsOpen ? 1.06f : 1f) * (inSlipstream ? 1.035f : 1f);
+                    desired = Mathf.Min(desired, trafficLimit);
                     if (m.HasPitLane && pitLap > 0 && lap == pitLap && !finished
                         && RaceManager.InWindow(d, m.pitEntryStart - 260f, m.pitEntryStart - 20f, track.length))
                         Pit = PitState.Entering;
                     break;
+                }
 
                 case PitState.Entering:
                 {
@@ -227,10 +285,14 @@ public class RaceAI : MonoBehaviour
         wobbleVel += (-wobble * 30f - wobbleVel * 6f) * dt;
         wobble += wobbleVel * dt;
 
-        float accel = acceleration * (1f - 0.7f * Mathf.Pow(Mathf.Clamp01(Speed / Mathf.Max(maxSpeed, 1f)), 2f)) + 0.5f;
+        float accel = (acceleration * (1f - 0.7f * Mathf.Pow(Mathf.Clamp01(Speed / Mathf.Max(maxSpeed, 1f)), 2f)) + 0.5f) * (inSlipstream || drsOpen ? 1.08f : 1f);
         float brake = braking + aeroBraking * Speed * Speed;
         Speed = Mathf.MoveTowards(Speed, desired, (desired < Speed ? brake : accel) * dt);
         if (Speed > 0.5f && Mathf.Abs(lateralVel) < 0.5f) lane = Mathf.MoveTowards(lane, laneTarget, laneSpeed * dt);
+        float signedCurv = Vector3.SignedAngle(track.TangentAt(progress - 4f), track.TangentAt(progress + 6f), Vector3.up);
+        float laneSteer = Mathf.Clamp((laneTarget - lane) * 4f, -12f, 12f);
+        float targetSteer = Mathf.Clamp(signedCurv * 1.4f + laneSteer, -20f, 20f);
+        visualSteer = Mathf.MoveTowards(visualSteer, Speed > 0.5f ? targetSteer : 0f, 120f * dt);
         progress += Speed * dt;
         if (manager.HasPitLane && Pit == PitState.None && !finished) tyreWear += Speed * dt / Tyres.LifeMeters[(int)compound];
         Place();
@@ -294,8 +356,9 @@ public class RaceAI : MonoBehaviour
         return Mathf.Max(0f, ahead.speed + (gapBest - 7f) * 1.2f);
     }
 
-    float AvoidTraffic(float[] lanes)
+    float AvoidTraffic(float[] lanes, out bool blocked)
     {
+        blocked = false;
         float limit = float.MaxValue;
         RaceManager.Racer blocker = null;
         foreach (var r in manager.racers)
@@ -307,6 +370,7 @@ public class RaceAI : MonoBehaviour
                 blocker = r;
         }
         if (blocker == null) return limit;
+        blocked = true;
 
         // Try the nearest free lane to overtake
         float bestLane = float.NaN;
@@ -332,8 +396,26 @@ public class RaceAI : MonoBehaviour
 
     void Update()
     {
-        wheelSpin = (wheelSpin + Speed * Time.deltaTime / 0.36f * Mathf.Rad2Deg) % 360f;
+        float dt = Time.deltaTime;
+        wheelSpin = (wheelSpin + Speed * dt / 0.36f * Mathf.Rad2Deg) % 360f;
         for (int i = 0; i < 4; i++)
-            if (wheels[i] != null) wheels[i].localRotation = Quaternion.Euler(wheelSpin, 0, 0);
+        {
+            if (i < 2 && steerWheels[i] != null)
+            {
+                steerWheels[i].localRotation = Quaternion.Euler(0f, visualSteer, 0f);
+                if (spinWheels[i] != null) spinWheels[i].localRotation = Quaternion.Euler(wheelSpin, 0f, 0f);
+            }
+            else if (spinWheels[i] != null)
+            {
+                spinWheels[i].localRotation = i < 2
+                    ? Quaternion.Euler(0f, visualSteer, 0f) * Quaternion.Euler(wheelSpin, 0f, 0f)
+                    : Quaternion.Euler(wheelSpin, 0f, 0f);
+            }
+        }
+        if (drsPivot != null)
+        {
+            drsAngle = Mathf.MoveTowards(drsAngle, drsOpen ? -28f : 0f, 220f * dt);
+            drsPivot.localRotation = drsBaseRot * Quaternion.AngleAxis(drsAngle, drsAxisLocal);
+        }
     }
 }

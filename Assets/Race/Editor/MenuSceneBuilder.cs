@@ -2,11 +2,12 @@ using UnityEngine;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 
-// Tools > Build Main Menu: creates Assets/Scenes/Main Menu.unity — a dark showroom with a turntable,
+// Tools > Build Main Menu: creates Assets/Scenes/Final/Final Main Menu.unity — a dark showroom with a turntable,
 // spotlights and an F1 car that spins behind the menu — and makes it the first scene in the build.
 public static class MenuSceneBuilder
 {
-    const string ScenePath = "Assets/Scenes/Main Menu.unity";
+    const string ScenePath = "Assets/Scenes/Final/Final Main Menu.unity";
+    const string GenDir = "Assets/F1Assets/Generated";
 
     [MenuItem("Tools/Build Main Menu")]
     public static void Build()
@@ -15,7 +16,10 @@ public static class MenuSceneBuilder
         string previous = EditorSceneManager.GetActiveScene().path;
 
         var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-        F1ModelBuilder.Prepare();
+        if (!AssetDatabase.IsValidFolder("Assets/Scenes/Final"))
+            AssetDatabase.CreateFolder("Assets/Scenes", "Final");
+        if (!AssetDatabase.IsValidFolder(GenDir))
+            AssetDatabase.CreateFolder("Assets/F1Assets", "Generated");
 
         var camGo = new GameObject("Main Camera") { tag = "MainCamera" };
         var cam = camGo.AddComponent<Camera>();
@@ -45,9 +49,9 @@ public static class MenuSceneBuilder
         Spot("SpotFront", new Vector3(-3f, 4f, -6f), new Vector3(0, 0.4f, 0), 45f, 35f, Color.white);
         Spot("RimRed", new Vector3(4f, 2.5f, 5f), new Vector3(0, 0.5f, 0), 25f, 45f, new Color(1f, 0.2f, 0.2f));
 
-        var floorMat = F1ModelBuilder.Mat("Showroom_Floor", new Color(0.05f, 0.055f, 0.07f), 0.3f, 0.85f);
-        var discMat = F1ModelBuilder.Mat("Showroom_Turntable", new Color(0.12f, 0.12f, 0.14f), 0.8f, 0.9f);
-        var ringMat = F1ModelBuilder.Mat("Showroom_Ring", new Color(0.9f, 0.12f, 0.15f), 0f, 0.5f, new Color(0.9f, 0.1f, 0.12f) * 1.5f);
+        var floorMat = Mat("Showroom_Floor", new Color(0.05f, 0.055f, 0.07f), 0.3f, 0.85f);
+        var discMat = Mat("Showroom_Turntable", new Color(0.12f, 0.12f, 0.14f), 0.8f, 0.9f);
+        var ringMat = Mat("Showroom_Ring", new Color(0.9f, 0.12f, 0.15f), 0f, 0.5f, new Color(0.9f, 0.1f, 0.12f) * 1.5f);
         var floor = GameObject.CreatePrimitive(PrimitiveType.Plane);
         floor.name = "Floor";
         floor.transform.localScale = new Vector3(6, 1, 6);
@@ -91,5 +95,27 @@ public static class MenuSceneBuilder
         l.range = 20f;
         l.color = c;
         l.shadows = LightShadows.Soft;
+    }
+
+    static Material Mat(string name, Color c, float metal, float smooth, Color? emission = null)
+    {
+        string path = GenDir + "/" + name + ".mat";
+        var shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+        var m = AssetDatabase.LoadAssetAtPath<Material>(path);
+        if (m == null) { m = new Material(shader); AssetDatabase.CreateAsset(m, path); }
+        m.shader = shader;
+        if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", c);
+        if (m.HasProperty("_Color")) m.SetColor("_Color", c);
+        if (m.HasProperty("_Metallic")) m.SetFloat("_Metallic", metal);
+        if (m.HasProperty("_Smoothness")) m.SetFloat("_Smoothness", smooth);
+        if (emission.HasValue)
+        {
+            m.EnableKeyword("_EMISSION");
+            m.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
+            m.SetColor("_EmissionColor", emission.Value);
+        }
+        m.enableInstancing = true;
+        EditorUtility.SetDirty(m);
+        return m;
     }
 }

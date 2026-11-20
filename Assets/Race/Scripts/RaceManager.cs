@@ -79,6 +79,8 @@ public class RaceManager : MonoBehaviour
         public Transform tr;
         public float progress, prevProgress, lateral, speed, finishTime, penalty;
         public bool finished;
+        public int currentSector;
+        public float sectorStartTime;
     }
 
     // Player tyres and pit stop
@@ -99,6 +101,13 @@ public class RaceManager : MonoBehaviour
     Racer playerRacer, winner;
     int crossings, lapsTimed;
     float prevD, lapStartTime, lastLap = -1f, bestLap = -1f, resultsTimer;
+    int currentSector, trackLimitWarnings;
+    float sectorStartTime, offTrackCooldown, trackLimitBannerTimer;
+    string trackLimitMsg = "";
+    readonly float[] lastSectors = { -1f, -1f, -1f };
+    readonly float[] bestSectors = { -1f, -1f, -1f };
+    readonly float[] overallBestSectors = { -1f, -1f, -1f };
+    readonly int[] sectorStatus = new int[3];
     readonly bool[] checkpoints = new bool[3];
     readonly List<Vector3> trail = new List<Vector3>();
     float trailTimer;
@@ -108,6 +117,10 @@ public class RaceManager : MonoBehaviour
     Texture2D tex;
     float mapScale, mapMinX, mapMaxZ, styleScale = -1f;
     GUIStyle big, mid, small, center, button;
+    GUIStyle midCenter, bannerStyle, towerHead, towerCode, towerGap, towerPos;
+    GUIStyle miniBadge, miniPit, mapHeader, mapNumBlack, mapNumWhite;
+    GUIStyle drsStyle, tyreLetter, smallLeft, statusBold, pitChoiceStyle;
+    GUIStyle resultsName, resultsRight, radioHead, radioBody, tagPos, tagCode, sectorStyle;
 
     // ---------- Setup ----------
 
@@ -237,10 +250,10 @@ public class RaceManager : MonoBehaviour
             float h = (10f + 14f * Mathf.Abs(Mathf.Sin(Time.time * (9f + k * 2.3f) + k))) * s;
             Fill(new Rect(p.x + 22 * s + k * 7 * s, p.y + p.height / 2f - h / 2f, 4 * s, h), new Color(0.4f, 1f, 0.6f, alpha), 2 * s);
         }
-        var head = new GUIStyle(small) { alignment = TextAnchor.MiddleLeft, fontStyle = FontStyle.Bold };
+        var head = radioHead;
         head.normal.textColor = new Color(0.4f, 1f, 0.6f, alpha);
         GUI.Label(new Rect(p.x + 70 * s, p.y + 6 * s, p.width, 20 * s), "TEAM RADIO  ·  RACE ENGINEER", head);
-        var body = new GUIStyle(mid) { fontStyle = FontStyle.Normal, fontSize = Mathf.RoundToInt(17 * s) };
+        var body = radioBody;
         body.normal.textColor = new Color(1f, 1f, 1f, alpha);
         GUI.Label(new Rect(p.x + 70 * s, p.y + 28 * s, p.width - 80 * s, 34 * s), "\"" + radioText + "\"", body);
     }
@@ -251,7 +264,6 @@ public class RaceManager : MonoBehaviour
         if (useSession && !GameSession.Settings.nameTags) return;
         var cam = Camera.main;
         if (cam == null) return;
-        var st = new GUIStyle(mid) { fontSize = Mathf.RoundToInt(13 * s), alignment = TextAnchor.MiddleLeft };
         foreach (var r in racers)
         {
             if (r.isPlayer || !r.ai.gameObject.activeSelf) continue;
@@ -265,12 +277,12 @@ public class RaceManager : MonoBehaviour
             Rect p = new Rect(sp.x - w / 2f, Screen.height - sp.y - h, w, h);
             Fill(p, new Color(0.03f, 0.04f, 0.07f, 0.8f), 4 * k);
             Fill(new Rect(p.x, p.y, 26 * k, h), new Color(1f, 1f, 1f, 0.95f), 4 * k);
-            var ps = new GUIStyle(st) { alignment = TextAnchor.MiddleCenter, fontSize = Mathf.RoundToInt(13 * k) };
-            ps.normal.textColor = Color.black;
-            GUI.Label(new Rect(p.x, p.y, 26 * k, h), (standings.IndexOf(r) + 1).ToString(), ps);
+            int fs = Mathf.RoundToInt(13 * k);
+            tagPos.fontSize = fs;
+            GUI.Label(new Rect(p.x, p.y, 26 * k, h), (standings.IndexOf(r) + 1).ToString(), tagPos);
             Fill(new Rect(p.x + 28 * k, p.y + 4 * k, 4 * k, h - 8 * k), r.color);
-            var cs = new GUIStyle(st) { fontSize = Mathf.RoundToInt(13 * k) };
-            GUI.Label(new Rect(p.x + 36 * k, p.y, w - 36 * k, h), r.code, cs);
+            tagCode.fontSize = fs;
+            GUI.Label(new Rect(p.x + 36 * k, p.y, w - 36 * k, h), r.code, tagCode);
         }
     }
 
@@ -480,7 +492,11 @@ public class RaceManager : MonoBehaviour
     public void OnAiPitStop(RaceAI ai, bool arriving)
     {
         if (pitBoxes == null || ai.team < 0 || ai.team >= pitBoxes.Length || pitBoxes[ai.team] == null) return;
-        if (arriving) pitBoxes[ai.team].Begin(ai.StopTime);
+        if (arriving)
+        {
+            pitBoxes[ai.team].SetCompounds(ai.compound, ai.nextCompound);
+            pitBoxes[ai.team].Begin(ai.StopTime);
+        }
         else { pitBoxes[ai.team].SetWorking(false); pitBoxes[ai.team].ShowGreen(); }
     }
 
@@ -577,6 +593,7 @@ public class RaceManager : MonoBehaviour
         goBannerTimer -= Time.deltaTime;
         winnerBannerTimer -= Time.deltaTime;
         resultsTimer -= Time.deltaTime;
+        trackLimitBannerTimer -= Time.deltaTime;
         trailTimer -= Time.deltaTime;
         if (trailTimer <= 0f)
         {
@@ -595,8 +612,12 @@ public class RaceManager : MonoBehaviour
                 SetLights(0);
                 player.inputEnabled = true;
                 goBannerTimer = 1.5f;
+                lapStartTime = raceTime;
+                sectorStartTime = raceTime;
+                currentSector = 0;
                 if (ambient != null) ambient.Cheer();
-                Radio("Lights out! Clean launch, careful into Sainte Devote.", true);
+                string turn1 = useSession && !string.IsNullOrEmpty(GameSession.CurrentTrack.turn1Name) ? GameSession.CurrentTrack.turn1Name : "Turn 1";
+                Radio("Lights out! Clean launch, careful into " + turn1 + ".", true);
             }
         }
 
@@ -654,10 +675,50 @@ public class RaceManager : MonoBehaviour
                 for (int k = 0; k < checkpoints.Length; k++) checkpoints[k] = true;
             }
             prevD = d;
+            if (racing && !playerRacer.finished && crossings >= 1)
+            {
+                if (currentSector == 0 && prevD >= track.length / 3f && prevD < track.length * 0.6f)
+                {
+                    RecordPlayerSector(0, raceTime - sectorStartTime);
+                    currentSector = 1;
+                    sectorStartTime = raceTime;
+                }
+                else if (currentSector == 1 && prevD >= 2f * track.length / 3f && prevD < track.length * 0.9f)
+                {
+                    RecordPlayerSector(1, raceTime - sectorStartTime);
+                    currentSector = 2;
+                    sectorStartTime = raceTime;
+                }
+            }
         }
         playerRacer.progress = (crossings - 1) * track.length + prevD;
         playerRacer.lateral = lateral;
         playerRacer.speed = player.Speed;
+
+        if (racing && pitPhase == PitPhase.None && !playerRacer.finished)
+        {
+            offTrackCooldown -= dt;
+            bool inPitWin = HasPitLane && (InWindow(prevD, pitEntryStart, pitEntryEnd, track.length) || InWindow(prevD, pitExitStart, pitExitEnd, track.length));
+            float limit = track.HalfWidthAt(prevD) + 1.4f;
+            if (!inPitWin && Mathf.Abs(lateral) > limit && player.Speed > 15f && offTrackCooldown <= 0f)
+            {
+                offTrackCooldown = 4.5f;
+                trackLimitWarnings++;
+                if (trackLimitWarnings % 3 == 0)
+                {
+                    playerRacer.penalty += 3f;
+                    penaltyNote = "+" + Mathf.RoundToInt(playerRacer.penalty) + " s time penalty";
+                    trackLimitMsg = "TRACK LIMITS: +3s PENALTY (" + trackLimitWarnings + " warnings)";
+                    Radio("That's track limits again - 3 second time penalty added.", true);
+                }
+                else
+                {
+                    trackLimitMsg = "TRACK LIMITS WARNING " + (trackLimitWarnings % 3) + "/3";
+                    Radio("Watch track limits, stay inside the white lines.");
+                }
+                trackLimitBannerTimer = 3.2f;
+            }
+        }
 
         if (HasPitLane && player is F1Car f1)
         {
@@ -667,12 +728,12 @@ public class RaceManager : MonoBehaviour
             f1.tyreGripScale = Tyres.GripFactor(playerCompound, playerWear);
 
             if (pitPhase == PitPhase.None && racing && !playerRacer.finished && player.Speed > 3f
-                && InWindow(prevD, pitEntryStart, pitEntryEnd, track.length) && (lateral * PitSide > Mathf.Max(6.8f, track.halfWidth + 0.8f) || pitRequested))
+                && InWindow(prevD, pitEntryStart, pitEntryEnd, track.length) && (lateral * PitSide > Mathf.Max(6.8f, track.HalfWidthAt(prevD) + 0.8f) || pitRequested))
                 StartPlayerPit(lateral);
             UpdatePlayerPit(dt);
         }
 
-        // DRS: in an activation zone, from lap 2, within one second of the car ahead (always in time trial)
+        // DRS & Slipstream
         if (player is F1Car drsCar)
         {
             bool zone = drsZones != null && drsZones.Length > 0 && racing && pitPhase == PitPhase.None && !playerRacer.finished && InDrsZone(prevD);
@@ -680,6 +741,19 @@ public class RaceManager : MonoBehaviour
             drsCar.drsAvailable = zone && eligible;
             drsCar.drsAuto = useSession && GameSession.Settings.drsAssist;
             DrsZoneNow = zone;
+
+            float tow = 0f;
+            if (racing && pitPhase == PitPhase.None && player.Speed > 25f)
+            {
+                foreach (var r in racers)
+                {
+                    if (r.isPlayer || r.retired || (r.ai != null && (!r.ai.gameObject.activeSelf || r.ai.Pit != RaceAI.PitState.None))) continue;
+                    float dp = r.progress - playerRacer.progress;
+                    if (dp > 3f && dp < 28f && Mathf.Abs(r.lateral - playerRacer.lateral) < 2.6f)
+                        tow = Mathf.Max(tow, Mathf.InverseLerp(28f, 6f, dp));
+                }
+            }
+            drsCar.slipstreamFactor = tow;
         }
 
         foreach (var r in racers)
@@ -695,7 +769,29 @@ public class RaceManager : MonoBehaviour
             if (r.ai.TyresChanged) { r.ai.TyresChanged = false; Tyres.Paint(r.ai.gameObject, r.ai.compound); }
             if (r.ai.TyresOff != r.tyresHidden) { r.tyresHidden = r.ai.TyresOff; Tyres.SetTyresVisible(r.ai.gameObject, !r.tyresHidden); }
             if (r.finished) continue;
+            if (racing && r.progress > 0f)
+            {
+                float dMod = Mathf.Repeat(r.progress, track.length);
+                if (r.currentSector == 0 && dMod >= track.length / 3f && dMod < track.length * 0.6f)
+                {
+                    RecordAiSector(r, 0, raceTime - r.sectorStartTime);
+                    r.currentSector = 1;
+                    r.sectorStartTime = raceTime;
+                }
+                else if (r.currentSector == 1 && dMod >= 2f * track.length / 3f && dMod < track.length * 0.9f)
+                {
+                    RecordAiSector(r, 1, raceTime - r.sectorStartTime);
+                    r.currentSector = 2;
+                    r.sectorStartTime = raceTime;
+                }
+            }
             bool crossedLine = Mathf.FloorToInt(r.progress / track.length) > Mathf.FloorToInt(r.prevProgress / track.length) && r.progress > 0f;
+            if (crossedLine)
+            {
+                if (r.currentSector == 2) RecordAiSector(r, 2, raceTime - r.sectorStartTime);
+                r.currentSector = 0;
+                r.sectorStartTime = raceTime;
+            }
             if (r.progress >= laps * track.length || (winner != null && crossedLine)) Finish(r);
         }
     }
@@ -754,7 +850,11 @@ public class RaceManager : MonoBehaviour
 
     void StartPlayerPit(float lateral)
     {
-        if (pitBoxes != null && playerRacer.team < pitBoxes.Length && pitBoxes[playerRacer.team] != null) pitBoxes[playerRacer.team].Prepare();
+        if (pitBoxes != null && playerRacer.team < pitBoxes.Length && pitBoxes[playerRacer.team] != null)
+        {
+            pitBoxes[playerRacer.team].SetCompounds(playerCompound, playerNext);
+            pitBoxes[playerRacer.team].Prepare();
+        }
         var rb = player.GetComponent<Rigidbody>();
         rb.linearVelocity = Vector3.zero;
         rb.isKinematic = true;
@@ -790,7 +890,7 @@ public class RaceManager : MonoBehaviour
                     pitPhase = PitPhase.Service;
                     pitTimer = 0f;
                     serviceTime = 2.3f + Random.value * 0.6f + (Random.value < 0.06f ? 1.8f : 0f);
-                    if (box != null) box.Begin(serviceTime);
+                    if (box != null) { box.SetCompounds(playerCompound, playerNext); box.Begin(serviceTime); }
                     if (playerAudio != null) playerAudio.PlayPitGun();
                 }
                 break;
@@ -856,9 +956,29 @@ public class RaceManager : MonoBehaviour
         if (player is F1Car f1) f1.SetPitSpeed(pitV);
     }
 
+    void RecordPlayerSector(int idx, float dur)
+    {
+        if (dur <= 0.1f) return;
+        lastSectors[idx] = dur;
+        bool overall = overallBestSectors[idx] < 0f || dur < overallBestSectors[idx];
+        bool pb = bestSectors[idx] < 0f || dur < bestSectors[idx];
+        if (overall) overallBestSectors[idx] = dur;
+        if (pb) bestSectors[idx] = dur;
+        sectorStatus[idx] = overall ? 3 : pb ? 2 : 1;
+    }
+
+    void RecordAiSector(Racer r, int idx, float dur)
+    {
+        if (dur <= 0.1f) return;
+        if (overallBestSectors[idx] < 0f || dur < overallBestSectors[idx]) overallBestSectors[idx] = dur;
+    }
+
     void OnPlayerCrossedLine()
     {
         if (crossings < 2 || crossings - 1 <= lapsTimed || playerRacer.finished) return;
+        if (currentSector == 2) RecordPlayerSector(2, raceTime - sectorStartTime);
+        currentSector = 0;
+        sectorStartTime = raceTime;
         lapsTimed = crossings - 1;
         lastLap = raceTime - lapStartTime;
         bool best = bestLap < 0 || lastLap < bestLap;
@@ -887,8 +1007,8 @@ public class RaceManager : MonoBehaviour
             // Dry-race rule: two different compounds must be used
             if (MandatoryStop && CompoundsUsedCount() < 2)
             {
-                r.penalty = 30f;
-                penaltyNote = "+30 s penalty: you did not use a second tyre compound";
+                r.penalty += 30f;
+                penaltyNote = (penaltyNote.Length > 0 ? penaltyNote + " · " : "") + "+30 s penalty: no second tyre compound";
             }
             int pos = Standings().IndexOf(r) + 1;
             Radio("P" + pos + "! " + (pos == 1 ? "We won it! What a drive!" : pos <= 3 ? "That's a podium, great job." : pos <= 10 ? "Points finish, well done." : "Tough one. We'll come back stronger."), true);

@@ -84,8 +84,11 @@ public class F1Car : VehicleBase
     public override float MaxRpm => redline;
     public override float ErsCharge => ersEnergy / ersCapacity;
     [System.NonSerialized] public float tyreGripScale = 1f;   // compound and wear, set by the race manager
+    [System.NonSerialized] public float slipstreamFactor;      // 0..1 aero tow behind another car
     public bool OnGravel { get; private set; }
     public bool OnGrass { get; private set; }
+    public bool OnKerb { get; private set; }
+    public float TyreTemp { get; private set; } = 90f;
     // DRS: the race manager says when the car is in an activation zone; the driver opens the flap (F / Y)
     [System.NonSerialized] public bool drsAvailable, drsAuto;
     public bool DrsOpen { get; private set; }
@@ -101,7 +104,8 @@ public class F1Car : VehicleBase
     class Wheel
     {
         public string name;
-        public Transform visual;
+        public Transform steer;         // front upright / brake hub pivot (null on rear)
+        public Transform visual;        // spinning tyre mesh
         public Vector3 attach;          // local suspension top
         public bool front, left;
         public float compression, prevCompression, load, spin;
@@ -110,6 +114,10 @@ public class F1Car : VehicleBase
     }
 
     readonly Wheel[] wheels = new Wheel[4];
+    Transform steeringWheelPivot, drsFlapPivot;
+    Quaternion steeringWheelBaseRot, drsFlapBaseRot;
+    Vector3 steeringAxisLocal = Vector3.forward, drsAxisLocal = Vector3.right;
+    float drsVisualAngle;
     Rigidbody rb;
     Collider bodyCollider;
     ParticleSystem sparks;
@@ -153,18 +161,41 @@ public class F1Car : VehicleBase
         var sparksTf = transform.Find("Sparks");
         if (sparksTf != null) sparks = sparksTf.GetComponent<ParticleSystem>();
 
-        string[] names = { "WheelFL", "WheelFR", "WheelRL", "WheelRR" };
+        string[] legacyNames = { "WheelFL", "WheelFR", "WheelRL", "WheelRR" };
+        string[] steerNames = { "SteerFL", "SteerFR", null, null };
+        string[] spinNames = { "SpinFL", "SpinFR", "SpinRL", "SpinRR" };
         for (int i = 0; i < 4; i++)
         {
             bool front = i < 2, left = i % 2 == 0;
             float x = (front ? frontTrack : rearTrack) * (left ? -1 : 1);
             float z = front ? frontAxleZ : rearAxleZ;
+            Transform wheelsRoot = transform.Find("Wheels");
+            Transform steerTf = (wheelsRoot != null && steerNames[i] != null) ? wheelsRoot.Find(steerNames[i]) : null;
+            Transform spinTf = steerTf != null ? steerTf.Find(spinNames[i]) : (wheelsRoot != null ? wheelsRoot.Find(spinNames[i]) : null);
+            if (spinTf == null && wheelsRoot != null) spinTf = wheelsRoot.Find(legacyNames[i]);
             wheels[i] = new Wheel
             {
-                name = names[i], front = front, left = left,
-                visual = transform.Find("Wheels/" + names[i]),
+                name = legacyNames[i], front = front, left = left,
+                steer = steerTf,
+                visual = spinTf,
                 attach = new Vector3(x, tyreRadius + restLength, z)
             };
+        }
+        var body = transform.Find("Body");
+        if (body != null)
+        {
+            steeringWheelPivot = FindDeepChild(body, "SteeringWheel_Pivot");
+            if (steeringWheelPivot != null)
+            {
+                steeringWheelBaseRot = steeringWheelPivot.localRotation;
+                steeringAxisLocal = steeringWheelPivot.InverseTransformDirection(transform.TransformDirection(new Vector3(0f, -0.25f, 0.968f))).normalized;
+            }
+            drsFlapPivot = FindDeepChild(body, "DRS_Flap_Pivot");
+            if (drsFlapPivot != null)
+            {
+                drsFlapBaseRot = drsFlapPivot.localRotation;
+                drsAxisLocal = drsFlapPivot.InverseTransformDirection(transform.TransformDirection(Vector3.right)).normalized;
+            }
         }
         ersEnergy = ersCapacity;
         spawnPos = transform.position;
@@ -301,7 +332,8 @@ public class F1Car : VehicleBase
         float frontShare = FrontWingLost ? aeroBalanceFront * 0.55f : aeroBalanceFront;
         rb.AddForceAtPosition(-transform.up * downforce * frontShare, transform.TransformPoint(0, 0.3f, frontAxleZ));
         rb.AddForceAtPosition(-transform.up * downforce * (1f - frontShare), transform.TransformPoint(0, 0.3f, rearAxleZ));
-        if (vel.sqrMagnitude > 0.01f) rb.AddForce(-vel.normalized * 0.5f * airDensity * vel.sqrMagnitude * dragArea * (DrsOpen ? 0.8f : 1f));
+        float dragScale = (DrsOpen ? 0.8f : 1f) * (1f - 0.14f * Mathf.Clamp01(slipstreamFactor));
+        if (vel.sqrMagnitude > 0.01f) rb.AddForce(-vel.normalized * 0.5f * airDensity * vel.sqrMagnitude * dragArea * dragScale);
 
         // Gearbox
         shiftTimer -= dt;
@@ -360,7 +392,11 @@ public class F1Car : VehicleBase
         WheelSpinning = false;
         OnGravel = false;
         OnGrass = false;
+        OnKerb = false;
         ThrottleInput = driveInput;
+        float tempGrip = 1f;
+        if (TyreTemp < 70f) tempGrip = Mathf.Lerp(0.92f, 1f, Mathf.InverseLerp(30f, 70f, TyreTemp));
+        else if (TyreTemp > 112f) tempGrip = Mathf.Lerp(1f, 0.93f, Mathf.InverseLerp(112f, 135f, TyreTemp));
         float slipMax = 0f;
         float cornerMass = mass * 0.25f;
         foreach (var w in wheels)
@@ -373,14 +409,14 @@ public class F1Car : VehicleBase
             Vector3 pv = rb.GetPointVelocity(w.hit.point);
             float vx = Vector3.Dot(pv, wFwd), vy = Vector3.Dot(pv, wRight);
 
-            float mu = frictionCoef * tyreGripScale * Mathf.Clamp(1f - loadSensitivity * (w.load / nominalLoad - 1f), 0.75f, 1.25f);
+            float mu = frictionCoef * tyreGripScale * tempGrip * Mathf.Clamp(1f - loadSensitivity * (w.load / nominalLoad - 1f), 0.75f, 1.25f);
             if (w.front && FrontWingLost) mu *= 0.9f;
             // Gravel trap: little grip and a lot of drag
             var surface = w.hit.collider.sharedMaterial;
             bool gravel = surface != null && surface.name.StartsWith("Gravel");
             if (gravel) { mu *= 0.45f; OnGravel = true; }
             else if (surface != null && surface.name.StartsWith("Grass")) { mu *= 0.55f; OnGrass = true; }
-            else if (surface != null && surface.name.StartsWith("Kerb")) mu *= 0.93f;
+            else if (surface != null && surface.name.StartsWith("Kerb")) { mu *= 0.93f; OnKerb = true; }
             float maxF = mu * w.load;
 
             // Lateral: slip angle through a Pacejka-style curve (speed floor keeps it stable at a crawl)
@@ -458,6 +494,9 @@ public class F1Car : VehicleBase
         prevVelocity = rb.linearVelocity;
         LateralG = Vector3.Dot(accel, transform.right) / 9.81f;
         LongitudinalG = Vector3.Dot(accel, fwd) / 9.81f;
+        float heat = (0.18f * (Mathf.Abs(LateralG) + Mathf.Abs(LongitudinalG)) + 0.5f * TyreSlip) * Mathf.Min(absV, 80f) * 0.02f;
+        float cool = (TyreTemp - 35f) * (0.006f + 0.00004f * absV) + (OnGrass ? 1.5f : 0f);
+        TyreTemp = Mathf.Clamp(TyreTemp + (heat - cool) * dt, 35f, 130f);
 
         Vector3 delta = rb.position - lastPos; delta.y = 0;
         DistanceMeters += delta.magnitude;
@@ -526,12 +565,28 @@ public class F1Car : VehicleBase
             if (w.visual == null) continue;
             float drop = w.grounded ? (w.hit.distance - tyreRadius) : restLength + 0.03f;
             Vector3 p = w.attach - new Vector3(0, Mathf.Clamp(drop, 0f, restLength + 0.03f), 0);
-            w.visual.localPosition = p;
             float surface = Speed / tyreRadius;
             if (!w.front && WheelSpinning) surface *= 1.6f;
             if (WheelLocking && w.front) surface = 0f;
             w.spin = (w.spin + surface * Mathf.Rad2Deg * dt) % 360f;
-            w.visual.localRotation = Quaternion.Euler(0, w.front ? steerAngle : 0f, 0) * Quaternion.Euler(w.spin, 0, 0);
+            if (w.steer != null)
+            {
+                w.steer.localPosition = p;
+                w.steer.localRotation = Quaternion.Euler(0, w.front ? steerAngle : 0f, 0);
+                w.visual.localRotation = Quaternion.Euler(w.spin, 0, 0);
+            }
+            else
+            {
+                w.visual.localPosition = p;
+                w.visual.localRotation = Quaternion.Euler(0, w.front ? steerAngle : 0f, 0) * Quaternion.Euler(w.spin, 0, 0);
+            }
+        }
+        if (steeringWheelPivot != null)
+            steeringWheelPivot.localRotation = steeringWheelBaseRot * Quaternion.AngleAxis(-steerAngle * 5f, steeringAxisLocal);
+        if (drsFlapPivot != null)
+        {
+            drsVisualAngle = Mathf.MoveTowards(drsVisualAngle, DrsOpen ? -28f : 0f, 220f * dt);
+            drsFlapPivot.localRotation = drsFlapBaseRot * Quaternion.AngleAxis(drsVisualAngle, drsAxisLocal);
         }
     }
 
@@ -575,7 +630,7 @@ public class F1Car : VehicleBase
             sparks.transform.position = point;
             sparks.Emit(Mathf.RoundToInt(Mathf.Clamp(dv * 10f, 8f, 150f)));
         }
-        if (dv > wingBreakDeltaV && transform.InverseTransformPoint(point).z > 2.0f) BreakFrontWing();
+        if (dv > wingBreakDeltaV && transform.InverseTransformPoint(point).z > 1.8f) BreakFrontWing();
     }
 
     // Car-to-car contact (rival cars are triggers): resolved here in the horizontal plane only, as two
@@ -611,22 +666,46 @@ public class F1Car : VehicleBase
         var body = transform.Find("Body");
         if (body == null) return;
         var parts = new List<Transform>();
-        foreach (Transform t in body)
+        foreach (Transform t in body.GetComponentsInChildren<Transform>(true))
             if (t.name.StartsWith("FrontWing") || t.name.StartsWith("FrontEndplate")) parts.Add(t);
         if (parts.Count == 0) return;
         FrontWingLost = true;
+        var removedRenderers = new HashSet<Renderer>();
         var debris = new GameObject("FrontWingDebris");
-        debris.transform.SetPositionAndRotation(transform.TransformPoint(new Vector3(0, 0.15f, 2.8f)), transform.rotation);
+        debris.transform.SetPositionAndRotation(transform.TransformPoint(new Vector3(0, 0.15f, 2.6f)), transform.rotation);
         foreach (var p in parts)
         {
+            foreach (var r in p.GetComponents<Renderer>()) removedRenderers.Add(r);
             p.SetParent(debris.transform, true);
             var col = p.gameObject.AddComponent<BoxCollider>();
             if (bodyCollider != null) Physics.IgnoreCollision(col, bodyCollider);
+        }
+        var lodGroup = GetComponent<LODGroup>() ?? body.GetComponent<LODGroup>();
+        if (lodGroup != null && removedRenderers.Count > 0)
+        {
+            var lods = lodGroup.GetLODs();
+            for (int i = 0; i < lods.Length; i++)
+            {
+                var kept = new List<Renderer>();
+                foreach (var r in lods[i].renderers)
+                    if (r != null && !removedRenderers.Contains(r)) kept.Add(r);
+                lods[i].renderers = kept.ToArray();
+            }
+            lodGroup.SetLODs(lods);
+            lodGroup.RecalculateBounds();
         }
         var drb = debris.AddComponent<Rigidbody>();
         drb.mass = 15f;
         drb.linearVelocity = rb.linearVelocity * 0.6f + Vector3.up * 3f + Random.insideUnitSphere * 2f;
         drb.angularVelocity = Random.insideUnitSphere * 8f;
+    }
+
+    static Transform FindDeepChild(Transform root, string name)
+    {
+        if (root == null) return null;
+        foreach (Transform t in root.GetComponentsInChildren<Transform>(true))
+            if (t.name == name) return t;
+        return null;
     }
 
     public override void Teleport(Vector3 pos, Quaternion rot)

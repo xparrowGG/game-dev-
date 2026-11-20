@@ -20,24 +20,38 @@ public static class Tyres
 
     public static float GripFactor(Compound c, float wear) => Grip[(int)c] * WearGrip(wear);
 
-    // Recolour the sidewall stripes (material "F1_Stripe") without creating material instances.
+    // Swap Pirelli sidewall compound material ("Resources/F1Tyres/Tyre_{Soft,Medium,Hard}") or fallback tint.
     public static void Paint(GameObject car, Compound c)
     {
-        var block = new MaterialPropertyBlock();
+        Material compoundMat = Resources.Load<Material>("F1Tyres/Tyre_" + Names[(int)c]);
+        MaterialPropertyBlock block = compoundMat == null ? new MaterialPropertyBlock() : null;
         foreach (var r in car.GetComponentsInChildren<Renderer>(true))
         {
-            if (r.sharedMaterial == null || !r.sharedMaterial.name.StartsWith("F1_Stripe")) continue;
-            r.GetPropertyBlock(block);
-            block.SetColor("_BaseColor", Colors[(int)c]);
-            r.SetPropertyBlock(block);
+            bool isTyre = r.name.StartsWith("F1_Wheel") ||
+                          (r.sharedMaterial != null && (r.sharedMaterial.name.StartsWith("Mat_Tyre") || r.sharedMaterial.name.StartsWith("Tyre_")));
+            if (isTyre && compoundMat != null)
+            {
+                r.sharedMaterial = compoundMat;
+                continue;
+            }
+            if (block != null && r.sharedMaterial != null && r.sharedMaterial.name.StartsWith("F1_Stripe"))
+            {
+                r.GetPropertyBlock(block);
+                block.SetColor("_BaseColor", Colors[(int)c]);
+                r.SetPropertyBlock(block);
+            }
         }
     }
 
-    // Hide or show the tyres while the crew changes them.
+    // Hide or show the rubber tyres while the crew changes them (leaving brake hubs visible).
     public static void SetTyresVisible(GameObject car, bool visible)
     {
         var wheels = car.transform.Find("Wheels");
         if (wheels == null) return;
-        foreach (var r in wheels.GetComponentsInChildren<Renderer>(true)) r.enabled = visible;
+        foreach (var r in wheels.GetComponentsInChildren<Renderer>(true))
+        {
+            if (r.name.StartsWith("F1_Hub")) continue;
+            r.enabled = visible;
+        }
     }
 }
