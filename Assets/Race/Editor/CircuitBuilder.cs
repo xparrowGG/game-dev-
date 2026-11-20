@@ -51,7 +51,8 @@ public static class CircuitBuilder
     {
         if (EditorApplication.isPlaying) { Debug.LogError("Stop Play mode first."); return; }
         BuildCarAssets();
-        MenuSceneBuilder.Build();
+        F1PhysicsTest.Run();
+        MenuSceneBuilder.Build(false);
         foreach (var t in GameSession.Tracks) BuildCircuitScene(t.id);
         SetBuildScenes();
 
@@ -65,6 +66,8 @@ public static class CircuitBuilder
             report.AppendLine($"[{(ok ? "PASS" : "FAIL")}] {t.scene}: {summary.Replace('\n', ' ')}");
         }
         Debug.Log($"FINAL BUILD SUMMARY: {passed}/{GameSession.Tracks.Length} circuits passed\n{report}");
+        if (Application.isBatchMode && passed < GameSession.Tracks.Length)
+            Debug.LogError($"Batch build verification failed: {passed}/{GameSession.Tracks.Length} circuits passed");
         string menuPath = SceneDir + "/Final Main Menu.unity";
         if (File.Exists(menuPath)) EditorSceneManager.OpenScene(menuPath, OpenSceneMode.Single);
     }
@@ -499,18 +502,48 @@ public static class CircuitBuilder
         EnhanceMaterials(map, id, dir + "/textures");
 
         // Blender -> Unity coordinates, found by matching the asphalt bounds
+        Physics.SyncTransforms();
         var asphalt = FindDeep(map.transform, "Col_Track_Asphalt");
-        // The pack's meshes are already Y-up; the importer leaves an extra axis rotation on each object.
-        // Cancel it at the root so the circuit lies flat (asphalt ends up with no rotation).
-        if (asphalt != null)
+        Bounds ub = BoundsOf(asphalt != null ? asphalt.gameObject : map);
+        // Only adjust root rotation if the imported circuit is NOT already flat (Y = vertical elevation)
+        if (asphalt != null && ub.size.y > Mathf.Min(ub.size.x, ub.size.z) * 0.5f)
         {
             map.transform.rotation = Quaternion.Inverse(asphalt.rotation) * map.transform.rotation;
+            Physics.SyncTransforms();
+            ub = BoundsOf(asphalt.gameObject);
+            if (ub.size.z < ub.size.y * 0.5f)
+            {
+                map.transform.rotation = Quaternion.Euler(-90f, 0f, 0f) * map.transform.rotation;
+                Physics.SyncTransforms();
+                ub = BoundsOf(asphalt.gameObject);
+            }
             foreach (var mc in map.GetComponentsInChildren<MeshCollider>(true)) { var m0 = mc.sharedMesh; mc.sharedMesh = null; mc.sharedMesh = m0; }
+            Physics.SyncTransforms();
         }
-        Physics.SyncTransforms();
-        Bounds ub = BoundsOf(asphalt != null ? asphalt.gameObject : map);
         if (ub.size.y > ub.size.x * 0.5f) Debug.LogWarning(id + ": circuit still not flat after axis fix, bounds " + ub.size);
+        if (asphalt != null)
+        {
+            var amf = asphalt.GetComponent<MeshFilter>();
+            if (amf != null && amf.sharedMesh != null && amf.sharedMesh.normals.Length > 0)
+            {
+                float sumY = 0f;
+                var ns = amf.sharedMesh.normals;
+                int stepN = Mathf.Max(1, ns.Length / 200);
+                int cnt = 0;
+                for (int k = 0; k < ns.Length; k += stepN) { sumY += asphalt.TransformDirection(ns[k]).normalized.y; cnt++; }
+                float avgY = sumY / Mathf.Max(1, cnt);
+                if (avgY < 0.5f) Debug.LogWarning($"{id}: Col_Track_Asphalt average world normal Y = {avgY:0.00} (expected ~+1.0)");
+            }
+        }
         float err = Calibrate(data, ub);
+        var roadVis = FindDeep(map.transform, "Road_Surface") ?? FindDeep(map.transform, "Road_Asphalt");
+        if (asphalt != null && roadVis != null)
+        {
+            float rotDiff = Quaternion.Angle(roadVis.rotation, asphalt.rotation);
+            float cDiff = Vector3.Distance(BoundsOf(roadVis.gameObject).center, ub.center);
+            if (rotDiff > 1f || cDiff > 10f)
+                Debug.LogWarning($"{id}: visual vs collider mismatch (rot {rotDiff:0.0}°, center diff {cDiff:0.0} m)");
+        }
 
         // Centreline (+ per-point halfWidths from Blender track.json)
         track = root.AddComponent<RaceTrack>();
@@ -734,9 +767,28 @@ public static class CircuitBuilder
 
     static Bounds BoundsOf(GameObject go)
     {
+        var mfs = go.GetComponentsInChildren<MeshFilter>(true);
+        Bounds b = default;
+        bool has = false;
+        foreach (var mf in mfs)
+        {
+            if (mf.sharedMesh == null) continue;
+            Bounds mb = mf.sharedMesh.bounds;
+            Vector3 c = mb.center, e = mb.extents;
+            Matrix4x4 m = mf.transform.localToWorldMatrix;
+            for (int sx = -1; sx <= 1; sx += 2)
+                for (int sy = -1; sy <= 1; sy += 2)
+                    for (int sz = -1; sz <= 1; sz += 2)
+                    {
+                        Vector3 wp = m.MultiplyPoint3x4(c + new Vector3(e.x * sx, e.y * sy, e.z * sz));
+                        if (!has) { b = new Bounds(wp, Vector3.zero); has = true; }
+                        else b.Encapsulate(wp);
+                    }
+        }
+        if (has) return b;
         var rs = go.GetComponentsInChildren<Renderer>(true);
         if (rs.Length == 0) return new Bounds(go.transform.position, Vector3.zero);
-        var b = rs[0].bounds;
+        b = rs[0].bounds;
         foreach (var r in rs) b.Encapsulate(r.bounds);
         return b;
     }

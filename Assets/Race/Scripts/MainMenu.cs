@@ -19,7 +19,7 @@ public class MainMenu : MonoBehaviour
     RaceSetup quick;
     string newName = "Your Name", newNumber = "7";
     int newTeam;
-    int shownTeam = -1;
+    int shownTeam = -1, shownCompound = -1;
 
     Texture2D tex;
     GUIStyle title, subtitle, header, label, value, small, field, cardTitle, cardText, chip, chipOn, bigButton;
@@ -51,6 +51,12 @@ public class MainMenu : MonoBehaviour
             shownTeam = team;
             var t = GameSession.Teams[team];
             RaceManager.ApplyLivery(showroomCar.gameObject, t.primary, t.secondary, new Color(1f, 0.85f, 0.1f), t.livery);
+        }
+        int comp = Mathf.Clamp(quick.startCompound, 0, 2);
+        if (comp != shownCompound && showroomCar != null)
+        {
+            shownCompound = comp;
+            Tyres.Paint(showroomCar.gameObject, (Compound)comp);
         }
     }
 

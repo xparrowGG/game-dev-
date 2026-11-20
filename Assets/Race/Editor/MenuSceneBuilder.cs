@@ -10,9 +10,11 @@ public static class MenuSceneBuilder
     const string GenDir = "Assets/F1Assets/Generated";
 
     [MenuItem("Tools/Build Main Menu")]
-    public static void Build()
+    public static void Build() => Build(true);
+
+    public static void Build(bool interactive)
     {
-        if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
+        if (interactive && !EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
         string previous = EditorSceneManager.GetActiveScene().path;
 
         var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
@@ -81,7 +83,7 @@ public static class MenuSceneBuilder
         CircuitBuilder.AddSceneToBuild(ScenePath, 0);
         Debug.Log("Main menu scene built: " + ScenePath);
 
-        if (!string.IsNullOrEmpty(previous)) EditorSceneManager.OpenScene(previous);
+        if (interactive && !string.IsNullOrEmpty(previous)) EditorSceneManager.OpenScene(previous);
     }
 
     static void Spot(string name, Vector3 pos, Vector3 target, float angle, float intensity, Color c)
