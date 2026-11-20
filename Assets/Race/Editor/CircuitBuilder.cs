@@ -19,10 +19,12 @@ public static class CircuitBuilder
 {
     const string TrackRoot = "Assets/F1Assets/Tracks";
     const string CarFbx = "Assets/F1Assets/Car/F1_2026_Car.fbx";
+    const string PitPropsFbx = "Assets/F1Assets/Car/F1_PitProps.fbx";
     const string CarPrefab = "Assets/F1Assets/Car/F1_2026.prefab";
     const string LiveryDir = "Assets/Resources/F1Liveries";
+    const string TyreDir = "Assets/Resources/F1Tyres";
     const string GenDir = "Assets/F1Assets/Generated";
-    const string SceneDir = "Assets/Scenes";
+    const string SceneDir = "Assets/Scenes/Final";
     public const int Cars = 22;
 
     static readonly string[] LiveryNames =
@@ -38,16 +40,41 @@ public static class CircuitBuilder
     {
         public string centreSource;
         public float halfWidth;
-        public float[] centre, pit, startFinish, pitEntry, pitExit, asphaltMin, asphaltMax;
+        public float[] centre, halfWidths, pit, startFinish, pitEntry, pitExit, asphaltMin, asphaltMax;
         public DrsJson[] drs;
     }
 
     // ---------- Menu ----------
 
-    [MenuItem("Tools/XPARROW/1 Build Car Liveries + Prefab")]
+    [MenuItem("Tools/XPARROW/Build FINAL Game (All Assets + Menu + 5 Circuits + Verify)")]
+    public static void BuildFinalGameAll()
+    {
+        if (EditorApplication.isPlaying) { Debug.LogError("Stop Play mode first."); return; }
+        BuildCarAssets();
+        MenuSceneBuilder.Build();
+        foreach (var t in GameSession.Tracks) BuildCircuitScene(t.id);
+        SetBuildScenes();
+
+        int passed = 0;
+        var report = new System.Text.StringBuilder("FINAL BUILD VERIFICATION:\n");
+        foreach (var t in GameSession.Tracks)
+        {
+            string p = SceneDir + "/" + t.scene + ".unity";
+            bool ok = CircuitDriveTest.RunForScene(p, out string summary);
+            if (ok) passed++;
+            report.AppendLine($"[{(ok ? "PASS" : "FAIL")}] {t.scene}: {summary.Replace('\n', ' ')}");
+        }
+        Debug.Log($"FINAL BUILD SUMMARY: {passed}/{GameSession.Tracks.Length} circuits passed\n{report}");
+        string menuPath = SceneDir + "/Final Main Menu.unity";
+        if (File.Exists(menuPath)) EditorSceneManager.OpenScene(menuPath, OpenSceneMode.Single);
+    }
+
+    [MenuItem("Tools/XPARROW/1 Build Car Liveries + Tyres + Prefab")]
     public static void BuildCarAssets()
     {
         BuildLiveries();
+        BuildTyreMaterials();
+        BuildPitPropPrefabs();
         BuildCarPrefab();
     }
 
@@ -57,10 +84,12 @@ public static class CircuitBuilder
     [MenuItem("Tools/XPARROW/2 Build Circuit/Spa")] static void BSpa() => BuildCircuitScene("Spa");
     [MenuItem("Tools/XPARROW/2 Build Circuit/Suzuka")] static void BSuzuka() => BuildCircuitScene("Suzuka");
 
-    [MenuItem("Tools/XPARROW/3 Set Build Scenes (menu + 5 circuits)")]
+    [MenuItem("Tools/XPARROW/3 Set Build Scenes (Final menu + 5 circuits)")]
     public static void SetBuildScenes()
     {
-        var list = new List<EditorBuildSettingsScene> { new EditorBuildSettingsScene(SceneDir + "/Main Menu.unity", true) };
+        var list = new List<EditorBuildSettingsScene>();
+        string menuPath = SceneDir + "/Final Main Menu.unity";
+        if (File.Exists(menuPath)) list.Add(new EditorBuildSettingsScene(menuPath, true));
         foreach (var t in GameSession.Tracks)
         {
             string p = SceneDir + "/" + t.scene + ".unity";
@@ -93,6 +122,31 @@ public static class CircuitBuilder
 
     static Texture2D LoadTex(string path) => AssetDatabase.LoadAssetAtPath<Texture2D>(path);
 
+    static Texture2D LoadOrPackMetallicGloss(string metPath, string roughPath, string outPath)
+    {
+        if (!File.Exists(outPath))
+        {
+            var met = LoadTex(metPath);
+            var rough = LoadTex(roughPath);
+            if (met != null && rough != null)
+            {
+                var mp = met.GetPixels(); var rp = rough.GetPixels();
+                int w = met.width, h = met.height;
+                if (rough.width != w || rough.height != h) rp = Resize(rough, w, h);
+                var outp = new Color[mp.Length];
+                for (int k = 0; k < mp.Length; k++) outp[k] = new Color(mp[k].r, mp[k].r, mp[k].r, 1f - rp[k].r);
+                var t = new Texture2D(w, h, TextureFormat.RGBA32, false, true);
+                t.SetPixels(outp); t.Apply();
+                File.WriteAllBytes(outPath, t.EncodeToPNG());
+                Object.DestroyImmediate(t);
+                AssetDatabase.ImportAsset(outPath);
+                var ti = (TextureImporter)AssetImporter.GetAtPath(outPath);
+                ti.sRGBTexture = false; ti.maxTextureSize = 2048; ti.SaveAndReimport();
+            }
+        }
+        return LoadTex(outPath);
+    }
+
     public static void BuildLiveries()
     {
         EnsureFolder(LiveryDir);
@@ -106,34 +160,16 @@ public static class CircuitBuilder
         {
             string n = LiveryNames[i];
             var baseCol = LoadTex($"{texDir}/teams/T_{n}_BaseColor.png");
-            string mgPath = $"{GenDir}/T_{n}_MetallicGloss.png";
-            if (!File.Exists(mgPath))
-            {
-                var met = LoadTex($"{texDir}/teams/T_{n}_Metallic.png");
-                var rough = LoadTex($"{texDir}/teams/T_{n}_Roughness.png");
-                if (met != null && rough != null)
-                {
-                    var mp = met.GetPixels(); var rp = rough.GetPixels();
-                    int w = met.width, h = met.height;
-                    if (rough.width != w || rough.height != h) rp = Resize(rough, w, h);
-                    var outp = new Color[mp.Length];
-                    for (int k = 0; k < mp.Length; k++) outp[k] = new Color(mp[k].r, mp[k].r, mp[k].r, 1f - rp[k].r);
-                    var t = new Texture2D(w, h, TextureFormat.RGBA32, false, true);
-                    t.SetPixels(outp); t.Apply();
-                    File.WriteAllBytes(mgPath, t.EncodeToPNG());
-                    Object.DestroyImmediate(t);
-                    AssetDatabase.ImportAsset(mgPath);
-                    var ti = (TextureImporter)AssetImporter.GetAtPath(mgPath);
-                    ti.sRGBTexture = false; ti.maxTextureSize = 2048; ti.SaveAndReimport();
-                }
-            }
+            var mg = LoadOrPackMetallicGloss(
+                $"{texDir}/teams/T_{n}_Metallic.png",
+                $"{texDir}/teams/T_{n}_Roughness.png",
+                $"{GenDir}/T_{n}_MetallicGloss.png");
             string matPath = $"{LiveryDir}/Livery_{i:00}.mat";
             var m = AssetDatabase.LoadAssetAtPath<Material>(matPath);
             if (m == null) { m = new Material(lit); AssetDatabase.CreateAsset(m, matPath); }
             m.shader = lit;
             m.SetTexture("_BaseMap", baseCol);
             m.SetColor("_BaseColor", Color.white);
-            var mg = LoadTex(mgPath);
             if (mg != null) { m.SetTexture("_MetallicGlossMap", mg); m.EnableKeyword("_METALLICSPECGLOSSMAP"); }
             m.SetFloat("_Metallic", 1f);
             m.SetFloat("_Smoothness", 1f);
@@ -154,6 +190,104 @@ public static class CircuitBuilder
         Debug.Log("Liveries built: " + LiveryNames.Length);
     }
 
+    public static void BuildTyreMaterials()
+    {
+        EnsureFolder(TyreDir);
+        EnsureFolder(GenDir);
+        var lit = Shader.Find("Universal Render Pipeline/Lit");
+        string texDir = "Assets/F1Assets/Car/Textures/tyres";
+        (string key, string fileKey)[] specs =
+        {
+            ("Soft", "01_Soft_Red"),
+            ("Medium", "02_Medium_Yellow"),
+            ("Hard", "03_Hard_White"),
+            ("Inter", "04_Intermediate_Green"),
+            ("Wet", "05_FullWet_Blue"),
+        };
+        foreach (var (key, fileKey) in specs)
+        {
+            var baseCol = LoadTex($"{texDir}/T_Tyre_{fileKey}_BaseColor.png");
+            var normal = LoadTex($"{texDir}/T_Tyre_{fileKey}_Normal.png");
+            var mg = LoadOrPackMetallicGloss(
+                $"{texDir}/T_Tyre_{fileKey}_Metallic.png",
+                $"{texDir}/T_Tyre_{fileKey}_Roughness.png",
+                $"{GenDir}/T_Tyre_{fileKey}_MetallicGloss.png");
+            string matPath = $"{TyreDir}/Tyre_{key}.mat";
+            var m = AssetDatabase.LoadAssetAtPath<Material>(matPath);
+            if (m == null) { m = new Material(lit); AssetDatabase.CreateAsset(m, matPath); }
+            m.shader = lit;
+            if (baseCol != null) m.SetTexture("_BaseMap", baseCol);
+            m.SetColor("_BaseColor", Color.white);
+            if (mg != null) { m.SetTexture("_MetallicGlossMap", mg); m.EnableKeyword("_METALLICSPECGLOSSMAP"); }
+            m.SetFloat("_Metallic", 1f);
+            m.SetFloat("_Smoothness", 0.85f);
+            m.SetFloat("_SmoothnessTextureChannel", 0f);
+            if (normal != null) { m.SetTexture("_BumpMap", normal); m.SetFloat("_BumpScale", 1f); m.EnableKeyword("_NORMALMAP"); }
+            m.enableInstancing = true;
+            EditorUtility.SetDirty(m);
+        }
+        AssetDatabase.SaveAssets();
+        Debug.Log("Pirelli tyre materials built: " + specs.Length);
+    }
+
+    public static void BuildPitPropPrefabs()
+    {
+        EnsureFolder(TyreDir);
+        var fbx = AssetDatabase.LoadAssetAtPath<GameObject>(PitPropsFbx);
+        if (fbx == null) { Debug.LogWarning("PitProps FBX missing: " + PitPropsFbx); return; }
+        var inst = (GameObject)PrefabUtility.InstantiatePrefab(fbx);
+        PrefabUtility.UnpackPrefabInstance(inst, PrefabUnpackMode.Completely, InteractionMode.AutomatedAction);
+        var matMed = AssetDatabase.LoadAssetAtPath<Material>(TyreDir + "/Tyre_Medium.mat");
+        var matSoft = AssetDatabase.LoadAssetAtPath<Material>(TyreDir + "/Tyre_Soft.mat");
+
+        void SaveCenteredTyrePrefab(string srcName, string outName)
+        {
+            var src = FindDeep(inst.transform, srcName);
+            if (src == null) return;
+            var root = new GameObject(outName);
+            src.SetParent(root.transform, true);
+            foreach (var c in src.GetComponentsInChildren<Collider>(true)) Object.DestroyImmediate(c);
+            var r = src.GetComponentInChildren<Renderer>(true);
+            if (r != null)
+            {
+                if (matMed != null) r.sharedMaterial = matMed;
+                if (r.bounds.size.x > r.bounds.size.y && r.bounds.size.z < r.bounds.size.y)
+                    src.Rotate(0f, 90f, 0f, Space.World);
+                src.position -= r.bounds.center - root.transform.position;
+            }
+            PrefabUtility.SaveAsPrefabAsset(root, $"{TyreDir}/{outName}.prefab");
+            Object.DestroyImmediate(root);
+        }
+
+        SaveCenteredTyrePrefab("Tyre_Front_Prop", "PitTyre_Front");
+        SaveCenteredTyrePrefab("Tyre_Rear_Prop", "PitTyre_Rear");
+
+        var cluster = new GameObject("PitProps_Cluster");
+        string[] propNames = { "Prop_Pit_Tyre_Trolley", "Prop_Pit_Tyre_Stack_4x", "Prop_Pit_Tyre_Blanket_Pair" };
+        float[] zOffsets = { -1.6f, 0.2f, 1.4f };
+        for (int i = 0; i < propNames.Length; i++)
+        {
+            var p = FindDeep(inst.transform, propNames[i]);
+            if (p == null) continue;
+            p.SetParent(cluster.transform, true);
+            foreach (var c in p.GetComponentsInChildren<Collider>(true)) Object.DestroyImmediate(c);
+            foreach (var r in p.GetComponentsInChildren<Renderer>(true))
+            {
+                string mn = r.sharedMaterial != null ? r.sharedMaterial.name : "";
+                if (mn.Contains("Soft") && matSoft != null) r.sharedMaterial = matSoft;
+                else if (mn.Contains("Medium") && matMed != null) r.sharedMaterial = matMed;
+            }
+            Bounds b = BoundsOf(p.gameObject);
+            Vector3 offset = new Vector3(0f, 0f, zOffsets[i]) - new Vector3(b.center.x, b.min.y, b.center.z);
+            p.position += offset;
+        }
+        PrefabUtility.SaveAsPrefabAsset(cluster, $"{TyreDir}/PitProps_Cluster.prefab");
+        Object.DestroyImmediate(cluster);
+        Object.DestroyImmediate(inst);
+        AssetDatabase.SaveAssets();
+        Debug.Log("Pit prop prefabs built in " + TyreDir);
+    }
+
     static Color[] Resize(Texture2D src, int w, int h)
     {
         var o = new Color[w * h];
@@ -166,6 +300,8 @@ public static class CircuitBuilder
 
     public static void BuildCarPrefab()
     {
+        var mi = AssetImporter.GetAtPath(CarFbx) as ModelImporter;
+        if (mi != null && !mi.isReadable) { mi.isReadable = true; mi.SaveAndReimport(); }
         var fbx = AssetDatabase.LoadAssetAtPath<GameObject>(CarFbx);
         if (fbx == null) { Debug.LogError("Car FBX missing: " + CarFbx); return; }
         var root = new GameObject("F1_2026");
@@ -193,49 +329,89 @@ public static class CircuitBuilder
         float radius = mf.extents.y;
         model.transform.position -= new Vector3((front.x + rear.x) / 2f, wheelY - radius, (front.z + rear.z) / 2f);
 
-        // Wheel pivots in the layout F1Car / RaceAI expect: Wheels/WheelFL ... (spin about X, steer about Y)
+        // Wheel pivots: front Wheels/SteerFL -> F1_Hub_* + SpinFL -> F1_Wheel_*; rear Wheels/SpinRL -> F1_Wheel_*
         var wheels = new GameObject("Wheels").transform;
         wheels.SetParent(root.transform, false);
         string[] keys = { "FL", "FR", "RL", "RR" };
         var pivots = new Vector3[4];
         for (int i = 0; i < 4; i++)
         {
-            var spin = F("Spin_" + keys[i]);
-            var w = new GameObject("Wheel" + keys[i]).transform;
-            w.SetParent(wheels, false);
-            w.position = C(keys[i]);
-            w.rotation = root.transform.rotation;
-            pivots[i] = w.localPosition;
-            var move = new List<Transform>();
-            foreach (Transform c in spin) move.Add(c);
-            var steer = F("Steer_" + keys[i]);
-            if (steer != null) foreach (Transform c in steer) if (c != spin) move.Add(c);
-            foreach (var c in move) c.SetParent(w, true);
+            var spinSrc = F("Spin_" + keys[i]);
+            var steerSrc = F("Steer_" + keys[i]);
+            Transform parentForSpin = wheels;
+            if (i < 2)
+            {
+                var steerPivot = new GameObject("Steer" + keys[i]).transform;
+                steerPivot.SetParent(wheels, false);
+                steerPivot.position = C(keys[i]);
+                steerPivot.rotation = root.transform.rotation;
+                pivots[i] = steerPivot.localPosition;
+                if (steerSrc != null)
+                {
+                    var hubChildren = new List<Transform>();
+                    foreach (Transform c in steerSrc) if (c != spinSrc) hubChildren.Add(c);
+                    foreach (var c in hubChildren) c.SetParent(steerPivot, true);
+                }
+                parentForSpin = steerPivot;
+            }
+            var spinPivot = new GameObject("Spin" + keys[i]).transform;
+            spinPivot.SetParent(parentForSpin, false);
+            if (i < 2) { spinPivot.localPosition = Vector3.zero; spinPivot.localRotation = Quaternion.identity; }
+            else { spinPivot.position = C(keys[i]); spinPivot.rotation = root.transform.rotation; pivots[i] = spinPivot.localPosition; }
+            var tyreChildren = new List<Transform>();
+            foreach (Transform c in spinSrc) tyreChildren.Add(c);
+            foreach (var c in tyreChildren) c.SetParent(spinPivot, true);
         }
         foreach (var k in keys) { var s = F("Steer_" + k); if (s != null) Object.DestroyImmediate(s.gameObject); }
         foreach (var k in keys) { var s = F("Spin_" + k); if (s != null) Object.DestroyImmediate(s.gameObject); }
 
-        // Body collider from the pack's collision hull
+        // Body collider from the pack's convex hull (with fallback BoxCollider)
         var hull = F("Collider_Body");
-        var box = root.AddComponent<BoxCollider>();
-        if (hull != null && hull.GetComponent<Renderer>() != null)
+        string colInfo;
+        var hullMf = hull != null ? hull.GetComponent<MeshFilter>() : null;
+        if (hullMf != null && hullMf.sharedMesh != null)
         {
-            var b = hull.GetComponent<Renderer>().bounds;
-            box.center = root.transform.InverseTransformPoint(b.center);
-            box.size = b.size;
+            var srcMesh = hullMf.sharedMesh;
+            var colMesh = new Mesh { name = "F1_ColliderBody" };
+            var srcVerts = srcMesh.vertices;
+            var dstVerts = new Vector3[srcVerts.Length];
+            for (int v = 0; v < srcVerts.Length; v++)
+            {
+                Vector3 p = root.transform.InverseTransformPoint(hull.TransformPoint(srcVerts[v]));
+                p.y = Mathf.Max(p.y, 0.08f);
+                dstVerts[v] = p;
+            }
+            colMesh.vertices = dstVerts;
+            colMesh.triangles = srcMesh.triangles;
+            colMesh.RecalculateNormals();
+            colMesh.RecalculateBounds();
+            EnsureFolder(GenDir);
+            string meshPath = GenDir + "/F1_ColliderBody.asset";
+            AssetDatabase.DeleteAsset(meshPath);
+            AssetDatabase.CreateAsset(colMesh, meshPath);
+            var mc = root.AddComponent<MeshCollider>();
+            mc.sharedMesh = colMesh;
+            mc.convex = true;
+            colInfo = $"Mesh({colMesh.vertexCount}v, {colMesh.bounds.size:F2})";
             Object.DestroyImmediate(hull.gameObject);
         }
-        else { box.center = new Vector3(0, 0.5f, 0); box.size = new Vector3(1.9f, 0.95f, 5.4f); }
-        // Keep the box off the ground so the floor never scrapes on kerbs
-        float bottom = box.center.y - box.size.y / 2f;
-        if (bottom < 0.06f) { box.size -= new Vector3(0, 0.06f - bottom, 0); box.center += new Vector3(0, (0.06f - bottom) / 2f, 0); }
+        else
+        {
+            var box = root.AddComponent<BoxCollider>();
+            box.center = new Vector3(0, 0.54f, 0);
+            box.size = new Vector3(1.9f, 0.92f, 5.4f);
+            colInfo = box.size.ToString("F2");
+            if (hull != null) Object.DestroyImmediate(hull.gameObject);
+        }
 
-        // One livery material for every part (swapped per team at race start), LOD groups by suffix
+        // Livery on chassis/wings/hubs and Pirelli rubber on F1_Wheel_*; LOD groups by suffix
         var livery = AssetDatabase.LoadAssetAtPath<Material>(LiveryDir + "/Livery_00.mat");
+        var tyreMat = AssetDatabase.LoadAssetAtPath<Material>(TyreDir + "/Tyre_Medium.mat");
         var lods = new List<Renderer>[3] { new List<Renderer>(), new List<Renderer>(), new List<Renderer>() };
         foreach (var r in root.GetComponentsInChildren<Renderer>(true))
         {
-            if (livery != null) r.sharedMaterial = livery;
+            if (r.name.StartsWith("F1_Wheel") && tyreMat != null) r.sharedMaterial = tyreMat;
+            else if (livery != null) r.sharedMaterial = livery;
             r.shadowCastingMode = ShadowCastingMode.On;
             for (int l = 0; l < 3; l++) if (r.name.EndsWith("_LOD" + l)) lods[l].Add(r);
         }
@@ -262,12 +438,11 @@ public static class CircuitBuilder
             info.headY = db.max.y - 0.1f;
         }
 
-        string boxInfo = box.size.ToString("F2");
         PrefabUtility.SaveAsPrefabAsset(root, CarPrefab);
         Object.DestroyImmediate(root);
         AssetDatabase.SaveAssets();
         Debug.Log($"Car prefab built: front axle {info.frontAxleZ:0.00}, rear {info.rearAxleZ:0.00}, track {info.frontTrack:0.00}/{info.rearTrack:0.00}, " +
-                  $"tyre radius {radius:0.000}, collider {boxInfo}, LODs {lods[0].Count}/{lods[1].Count}/{lods[2].Count}");
+                  $"tyre radius {radius:0.000}, collider {colInfo}, LODs {lods[0].Count}/{lods[1].Count}/{lods[2].Count}");
     }
 
     static Transform FindDeep(Transform t, string name)
@@ -337,24 +512,36 @@ public static class CircuitBuilder
         if (ub.size.y > ub.size.x * 0.5f) Debug.LogWarning(id + ": circuit still not flat after axis fix, bounds " + ub.size);
         float err = Calibrate(data, ub);
 
-        // Centreline
+        // Centreline (+ per-point halfWidths from Blender track.json)
         track = root.AddComponent<RaceTrack>();
         var raw = ToPoints(data.centre);
+        List<float> rawW = null;
+        if (data.halfWidths != null && data.halfWidths.Length == raw.Count)
+            rawW = new List<float>(data.halfWidths);
         bool? cw = Clockwise.TryGetValue(id, out var v) ? v : null;
-        if (cw.HasValue && IsClockwiseBlender(data.centre) != cw.Value) raw.Reverse();
-        var pts = Resample(raw, 2f, true);
+        if (cw.HasValue && IsClockwiseBlender(data.centre) != cw.Value)
+        {
+            raw.Reverse();
+            rawW?.Reverse();
+        }
+        var pts = ResampleWithWidths(raw, rawW, 2f, true, out var resW);
         // Start the lap at the start/finish line
         Vector3 sf = data.startFinish != null && data.startFinish.Length == 3 ? B2U(data.startFinish, 0) : pts[0];
         int start = Nearest(pts, sf);
         var rot = new List<Vector3>(pts.Count);
         for (int i = 0; i < pts.Count; i++) rot.Add(pts[(start + i) % pts.Count]);
         track.points = rot.ToArray();
+        if (resW != null && resW.Count == pts.Count)
+        {
+            var rotW = new float[pts.Count];
+            for (int i = 0; i < pts.Count; i++) rotW[i] = Mathf.Clamp(resW[(start + i) % pts.Count], 3.8f, 12f);
+            track.halfWidths = rotW;
+        }
         track.spacing = 2f;
         track.length = track.spacing * track.points.Length;
         track.halfWidth = id == "Monaco" ? 4.6f : Mathf.Clamp(data.halfWidth, 4.5f, 8f);
         track.trackName = info != null ? info.name : id;
 
-        int verge = BuildVerges(root, map, id);
         Environment(root, track.PointAt(0));
 
         // Race manager + pit lane + DRS
@@ -393,86 +580,12 @@ public static class CircuitBuilder
         credit.transform.SetParent(root.transform, false);
 
         EnsureFolder(SceneDir);
-        string scenePath = SceneDir + "/" + (info != null ? info.scene : "Circuit " + id) + ".unity";
+        string scenePath = SceneDir + "/" + (info != null ? info.scene : "Final Circuit " + id) + ".unity";
         EditorSceneManager.SaveScene(scene, scenePath);
         AddSceneToBuild(scenePath, -1);
         AssetDatabase.SaveAssets();
         Debug.Log($"{id} built: lap {track.length:0} m ({track.points.Length} pts, {data.centreSource}), half width {track.halfWidth:0.0}, " +
-                  $"axis fit error {err:0.00} m, {colliders} colliders, embankment fill {verge} m², DRS zones {manager.drsZones.Length}, {pitNote}. Saved {scenePath}");
-    }
-
-    // The pack's roads sit on embankments: off the edge the terrain can be 3-4 m lower, so a car that runs wide
-    // drops off a ledge. Fill both sides with a grass slope (1:3) from the road edge down to whatever surface is
-    // there. Where the existing run-off / gravel / grass is already high enough the fill stays just below it (hidden).
-    static int BuildVerges(GameObject root, GameObject map, string id)
-    {
-        float[] offs = id == "Monaco" ? new[] { 0f, 1f, 2.5f, 4f, 6f } : new[] { 0f, 1.5f, 3f, 5f, 8f, 12f, 17f, 24f, 32f };
-        float edge = track.halfWidth + 1.2f, slope = 1f / 3f, step = 4f;
-        var grassPhys = SurfaceMat("Grass", 0.6f);
-        Material grassMat = null;
-        foreach (var r in map.GetComponentsInChildren<Renderer>(true))
-            foreach (var m in r.sharedMaterials)
-                if (m != null && (m.name.Contains("Terrain_Grass") || m.name.Contains("Verge_Grass") || m.name.Contains("Lawn"))) { grassMat = m; break; }
-        if (grassMat == null) grassMat = Mat("Verge_Grass", new Color(0.28f, 0.42f, 0.2f), 0f, 0.08f);
-        var hits = new RaycastHit[16];
-        int n = Mathf.CeilToInt(track.length / step);
-        float area = 0f;
-        var parent = new GameObject("Embankments");
-        parent.transform.SetParent(root.transform, false);
-        foreach (float side in new[] { -1f, 1f })
-        {
-            var verts = new List<Vector3>(); var uvs = new List<Vector2>(); var tris = new List<int>();
-            int cols = offs.Length;
-            for (int i = 0; i <= n; i++)
-            {
-                float d = i * step;
-                Vector3 c = track.PointAt(d), right = track.RightAt(d);
-                float roadY = c.y;
-                for (int k = 0; k < cols; k++)
-                {
-                    Vector3 p = c + right * side * (edge + offs[k]);
-                    float fill = roadY - 0.08f - offs[k] * slope;
-                    // Highest ground-like surface near road level (ignore walls, roofs, cars)
-                    int hc = Physics.RaycastNonAlloc(new Vector3(p.x, roadY + 1.5f, p.z), Vector3.down, hits, 60f, ~0, QueryTriggerInteraction.Ignore);
-                    float top = float.MinValue;
-                    for (int h = 0; h < hc; h++)
-                    {
-                        var hit = hits[h];
-                        if (hit.collider.attachedRigidbody != null || hit.normal.y < 0.6f || hit.collider.name.StartsWith("Barrier")) continue;
-                        if (hit.collider.transform.IsChildOf(parent.transform)) continue;
-                        top = Mathf.Max(top, hit.point.y);
-                    }
-                    float y = top > fill ? top - 0.06f : fill;
-                    if (top > fill && k > 0) area += 0f; else if (k > 0) area += step * (offs[k] - offs[k - 1]);
-                    verts.Add(new Vector3(p.x, y, p.z));
-                    uvs.Add(new Vector2((edge + offs[k]) / 5f, d / 5f));
-                }
-            }
-            for (int i = 0; i < n; i++)
-                for (int k = 0; k < cols - 1; k++)
-                {
-                    int a = i * cols + k, b = a + 1, c2 = a + cols, d2 = c2 + 1;
-                    if (side > 0) { tris.Add(a); tris.Add(c2); tris.Add(b); tris.Add(b); tris.Add(c2); tris.Add(d2); }
-                    else { tris.Add(a); tris.Add(b); tris.Add(c2); tris.Add(b); tris.Add(d2); tris.Add(c2); }
-                }
-            var mesh = new UnityEngine.Mesh { name = id + "_Embankment_" + (side < 0 ? "L" : "R"), indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
-            mesh.SetVertices(verts); mesh.SetUVs(0, uvs); mesh.SetTriangles(tris, 0);
-            mesh.RecalculateNormals(); mesh.RecalculateBounds();
-            string meshPath = GenDir + "/" + id + "/" + mesh.name + ".asset";
-            EnsureFolder(GenDir + "/" + id);
-            AssetDatabase.DeleteAsset(meshPath);
-            AssetDatabase.CreateAsset(mesh, meshPath);
-            var go = new GameObject("Embankment_" + (side < 0 ? "L" : "R"));
-            go.transform.SetParent(parent.transform, false);
-            go.AddComponent<MeshFilter>().sharedMesh = mesh;
-            var mr = go.AddComponent<MeshRenderer>();
-            mr.sharedMaterial = grassMat;
-            var mc = go.AddComponent<MeshCollider>();
-            mc.sharedMesh = mesh;
-            mc.sharedMaterial = grassPhys;
-        }
-        Physics.SyncTransforms();
-        return Mathf.RoundToInt(area);
+                  $"axis fit error {err:0.00} m, {colliders} colliders, DRS zones {manager.drsZones.Length}, {pitNote}. Saved {scenePath}");
     }
 
     // Colliders on the Col_* surfaces, helper objects hidden, imported lights/cameras removed
@@ -516,7 +629,8 @@ public static class CircuitBuilder
             }
             if (n.StartsWith("Checkpoint_") || n.StartsWith("Trigger_") || n.StartsWith("DRS_Zone") || n.StartsWith("Reset_Point")
                 || n.StartsWith("Track_Limit") || n.StartsWith("AI_") || n.StartsWith("Marker_") || n.StartsWith("Grid_Slot")
-                || n.StartsWith("Cam_") || n.StartsWith("GRP_Cameras") || n.StartsWith("GRP_Lighting"))
+                || n.StartsWith("Cam_") || n.StartsWith("GRP_Cameras") || n.StartsWith("GRP_Lighting")
+                || n.StartsWith("Pit_Crew") || n.StartsWith("Start_Gantry") || n.StartsWith("Track_Lane_Markings") || n.StartsWith("Side_Roads"))
             {
                 t.gameObject.SetActive(false);
                 continue;
@@ -551,8 +665,14 @@ public static class CircuitBuilder
             if (cache.TryGetValue(src, out var done)) return done;
             string n = src.name;
             Texture2D tex = null; float smooth = -1f, metal = -1f; Color? tint = null;
+            bool alphaClip = false;
             bool hasTex = src.HasProperty("_BaseMap") && src.GetTexture("_BaseMap") != null;
             if (n.Contains("Asphalt")) { if (!hasTex) tex = T("Track_Asphalt_Dark_2k", "Asphalt_Albedo"); smooth = 0.22f; }
+            else if (n.Contains("Fence") || n.Contains("Chainlink"))
+            {
+                tex = T("Chainlink_RGBA_1k") ?? AssetDatabase.LoadAssetAtPath<Texture2D>("Assets/F1Assets/Tracks/Monaco/textures/Chainlink_RGBA_1k.png");
+                smooth = 0.4f; metal = 0.6f; alphaClip = true;
+            }
             else if (n.Contains("Gravel")) { tex = T("Gravel_Albedo", "Concrete_PBR_Albedo"); tint = new Color(0.86f, 0.78f, 0.62f); smooth = 0.05f; }
             else if (n.Contains("Concrete") || n.Contains("Pit_Wall") || n.Contains("Bridge")) { tex = T("Concrete_PBR_Albedo"); smooth = 0.15f; }
             else if (n.Contains("Armco") || n.Contains("Steel")) { tex = T("Armco_Albedo_1k", "Steel_Albedo_1k"); smooth = 0.55f; metal = 0.8f; }
@@ -565,7 +685,7 @@ public static class CircuitBuilder
             else if (n.Contains("Water")) { smooth = 0.92f; }
             else if (n.Contains("Kerb")) { smooth = 0.3f; }
             else if (n.Contains("Glass")) { smooth = 0.95f; metal = 0.2f; }
-            if (tex == null && smooth < 0f && metal < 0f) { cache[src] = src; return src; }
+            if (tex == null && smooth < 0f && metal < 0f && !alphaClip) { cache[src] = src; return src; }
             string path = outDir + "/" + n.Replace("/", "_") + ".mat";
             var m = AssetDatabase.LoadAssetAtPath<Material>(path);
             if (m == null) { m = new Material(src); AssetDatabase.CreateAsset(m, path); }
@@ -575,10 +695,19 @@ public static class CircuitBuilder
                 m.SetTexture("_BaseMap", tex);
                 var c = tint ?? (src.HasProperty("_BaseColor") ? src.GetColor("_BaseColor") : Color.white);
                 // Keep the authored colour as a gentle tint over the texture
-                m.SetColor("_BaseColor", Color.Lerp(Color.white, c, 0.5f));
+                m.SetColor("_BaseColor", alphaClip ? Color.white : Color.Lerp(Color.white, c, 0.5f));
             }
             if (smooth >= 0f) m.SetFloat("_Smoothness", smooth);
             if (metal >= 0f) m.SetFloat("_Metallic", metal);
+            if (alphaClip)
+            {
+                m.SetFloat("_AlphaClip", 1f);
+                m.SetFloat("_Cutoff", 0.45f);
+                m.SetFloat("_Cull", 0f);
+                m.EnableKeyword("_ALPHATEST_ON");
+                m.SetOverrideTag("RenderType", "TransparentCutout");
+                m.renderQueue = (int)RenderQueue.AlphaTest;
+            }
             EditorUtility.SetDirty(m);
             cache[src] = m;
             return m;
@@ -653,32 +782,47 @@ public static class CircuitBuilder
         return area < 0;   // Blender: x east, y north
     }
 
-    // Catmull-Rom densify, then resample at a fixed arc-length spacing
+    // Catmull-Rom densify, then resample at a fixed arc-length spacing (with optional parallel width array)
     static List<Vector3> Resample(List<Vector3> src, float step, bool closed)
+        => ResampleWithWidths(src, null, step, closed, out _);
+
+    static List<Vector3> ResampleWithWidths(List<Vector3> src, List<float> widths, float step, bool closed, out List<float> outWidths)
     {
+        bool hasW = widths != null && widths.Count == src.Count;
         var dense = new List<Vector3>();
+        var denseW = hasW ? new List<float>() : null;
         int n = src.Count;
         for (int i = 0; i < (closed ? n : n - 1); i++)
         {
             Vector3 p0 = src[closed ? (i - 1 + n) % n : Mathf.Max(i - 1, 0)], p1 = src[i], p2 = src[(i + 1) % n], p3 = src[closed ? (i + 2) % n : Mathf.Min(i + 2, n - 1)];
+            float w1 = hasW ? widths[i] : 7f, w2 = hasW ? widths[(i + 1) % n] : 7f;
             int sub = Mathf.Clamp(Mathf.CeilToInt(Vector3.Distance(p1, p2) / 0.5f), 1, 64);
             for (int k = 0; k < sub; k++)
             {
                 float t = k / (float)sub, t2 = t * t, t3 = t2 * t;
                 dense.Add(0.5f * (2f * p1 + (-p0 + p2) * t + (2f * p0 - 5f * p1 + 4f * p2 - p3) * t2 + (-p0 + 3f * p1 - 3f * p2 + p3) * t3));
+                if (hasW) denseW.Add(Mathf.Lerp(w1, w2, t));
             }
         }
-        if (closed) dense.Add(dense[0]); else dense.Add(src[n - 1]);
+        if (closed) { dense.Add(dense[0]); if (hasW) denseW.Add(denseW[0]); }
+        else { dense.Add(src[n - 1]); if (hasW) denseW.Add(widths[n - 1]); }
         float total = 0f;
         for (int i = 1; i < dense.Count; i++) total += Vector3.Distance(dense[i - 1], dense[i]);
         int count = Mathf.Max(2, Mathf.RoundToInt(total / step));
         float ds = total / count;
         var outp = new List<Vector3> { dense[0] };
+        outWidths = hasW ? new List<float> { denseW[0] } : null;
         float acc = 0f, next = ds; int idx = 1;
         while (outp.Count < (closed ? count : count + 1) && idx < dense.Count)
         {
             float seg = Vector3.Distance(dense[idx - 1], dense[idx]);
-            if (acc + seg >= next) { outp.Add(Vector3.Lerp(dense[idx - 1], dense[idx], (next - acc) / Mathf.Max(seg, 1e-5f))); next += ds; }
+            if (acc + seg >= next)
+            {
+                float alpha = (next - acc) / Mathf.Max(seg, 1e-5f);
+                outp.Add(Vector3.Lerp(dense[idx - 1], dense[idx], alpha));
+                if (hasW) outWidths.Add(Mathf.Lerp(denseW[idx - 1], denseW[idx], alpha));
+                next += ds;
+            }
             else { acc += seg; idx++; }
         }
         return outp;
@@ -1022,7 +1166,8 @@ public static class CircuitBuilder
             var rb = car.AddComponent<Rigidbody>();
             rb.isKinematic = true;
             rb.interpolation = RigidbodyInterpolation.Interpolate;
-            car.GetComponent<BoxCollider>().isTrigger = true;   // contact with the player is resolved by F1Car
+            var col = car.GetComponent<Collider>();
+            if (col != null) col.isTrigger = true;   // contact with the player is resolved by F1Car
             var ai = car.AddComponent<RaceAI>();
             ai.driverName = "Driver " + k;
             ai.maxSpeed = 88f;

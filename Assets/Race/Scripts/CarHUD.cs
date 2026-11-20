@@ -192,9 +192,10 @@ public class CarHUD : MonoBehaviour
 
     void Row(float x, float y, float w, string label, string value, Color valueColor)
     {
-        GUI.Label(new Rect(x, y, w, 24 * s), label, smallStyle);
+        float rowH = 24 * styleScale;
+        GUI.Label(new Rect(x, y, w, rowH), label, smallStyle);
         rightStyle.normal.textColor = valueColor;
-        GUI.Label(new Rect(x, y, w, 24 * s), value, rightStyle);
+        GUI.Label(new Rect(x, y, w, rowH), value, rightStyle);
     }
 
     void DrawHints(float s, float alpha)

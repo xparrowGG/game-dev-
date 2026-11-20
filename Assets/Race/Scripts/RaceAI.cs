@@ -41,7 +41,6 @@ public class RaceAI : MonoBehaviour
     public bool Parked { get; private set; }
     public Vector3 Velocity => transform.forward * Speed + transform.right * lateralVel;
 
-    static readonly float[] WideLanes = { -4.5f, -1.5f, 1.5f, 4.5f };
     static readonly float[] NarrowLanes = { -2.6f, 0f, 2.6f };
     readonly float[] dynamicLanes = new float[3];
     Rigidbody rb;

@@ -1115,20 +1115,51 @@ public class RaceManager : MonoBehaviour
         return st;
     }
 
+    void BuildGuiStyles(float s)
+    {
+        styleScale = s;
+        big = Style(Mathf.RoundToInt(34 * s), FontStyle.Bold, TextAnchor.MiddleCenter);
+        mid = Style(Mathf.RoundToInt(18 * s), FontStyle.Bold, TextAnchor.MiddleLeft);
+        small = Style(Mathf.RoundToInt(15 * s), FontStyle.Normal, TextAnchor.MiddleCenter);
+        small.normal.textColor = new Color(1, 1, 1, 0.7f);
+        center = Style(Mathf.RoundToInt(64 * s), FontStyle.Bold, TextAnchor.MiddleCenter);
+        button = new GUIStyle(GUI.skin.button) { fontSize = Mathf.RoundToInt(20 * s), fontStyle = FontStyle.Bold };
+
+        midCenter = new GUIStyle(mid) { alignment = TextAnchor.MiddleCenter };
+        bannerStyle = new GUIStyle(center);
+        towerHead = new GUIStyle(small) { alignment = TextAnchor.MiddleLeft, fontStyle = FontStyle.Bold };
+        towerCode = new GUIStyle(mid) { fontSize = Mathf.RoundToInt(14 * s) };
+        towerGap = new GUIStyle(towerCode) { alignment = TextAnchor.MiddleRight, fontStyle = FontStyle.Normal };
+        towerPos = new GUIStyle(towerCode) { alignment = TextAnchor.MiddleCenter };
+        miniBadge = new GUIStyle(towerPos) { fontSize = Mathf.RoundToInt(9 * s) };
+        miniBadge.normal.textColor = Color.black;
+        miniPit = new GUIStyle(towerPos) { fontSize = Mathf.RoundToInt(10 * s) };
+        miniPit.normal.textColor = Color.black;
+        mapHeader = new GUIStyle(small) { alignment = TextAnchor.MiddleLeft, fontStyle = FontStyle.Bold };
+        mapNumBlack = new GUIStyle(small) { fontSize = Mathf.RoundToInt(9 * s), fontStyle = FontStyle.Bold };
+        mapNumBlack.normal.textColor = Color.black;
+        mapNumWhite = new GUIStyle(mapNumBlack);
+        mapNumWhite.normal.textColor = Color.white;
+        drsStyle = new GUIStyle(big) { fontSize = Mathf.RoundToInt(24 * s), alignment = TextAnchor.MiddleCenter };
+        tyreLetter = new GUIStyle(big) { fontSize = Mathf.RoundToInt(24 * s) };
+        smallLeft = new GUIStyle(small) { alignment = TextAnchor.MiddleLeft };
+        statusBold = new GUIStyle(smallLeft) { fontStyle = FontStyle.Bold, fontSize = Mathf.RoundToInt(13 * s) };
+        pitChoiceStyle = new GUIStyle(mid) { alignment = TextAnchor.MiddleCenter, fontSize = Mathf.RoundToInt(15 * s) };
+        resultsName = new GUIStyle(mid) { fontSize = Mathf.RoundToInt(15 * s) };
+        resultsRight = new GUIStyle(resultsName) { alignment = TextAnchor.MiddleRight, fontStyle = FontStyle.Normal };
+        radioHead = new GUIStyle(small) { alignment = TextAnchor.MiddleLeft, fontStyle = FontStyle.Bold };
+        radioBody = new GUIStyle(mid) { fontStyle = FontStyle.Normal, fontSize = Mathf.RoundToInt(17 * s) };
+        tagPos = new GUIStyle(mid) { fontSize = Mathf.RoundToInt(13 * s), alignment = TextAnchor.MiddleCenter };
+        tagPos.normal.textColor = Color.black;
+        tagCode = new GUIStyle(mid) { fontSize = Mathf.RoundToInt(13 * s), alignment = TextAnchor.MiddleLeft };
+        sectorStyle = new GUIStyle(small) { fontSize = Mathf.RoundToInt(12 * s), fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
+    }
+
     void OnGUI()
     {
         if (playerRacer == null) return;
         float s = Screen.height / 1080f;
-        if (!Mathf.Approximately(s, styleScale))
-        {
-            styleScale = s;
-            big = Style(Mathf.RoundToInt(34 * s), FontStyle.Bold, TextAnchor.MiddleCenter);
-            mid = Style(Mathf.RoundToInt(18 * s), FontStyle.Bold, TextAnchor.MiddleLeft);
-            small = Style(Mathf.RoundToInt(15 * s), FontStyle.Normal, TextAnchor.MiddleCenter);
-            small.normal.textColor = new Color(1, 1, 1, 0.7f);
-            center = Style(Mathf.RoundToInt(64 * s), FontStyle.Bold, TextAnchor.MiddleCenter);
-            button = new GUIStyle(GUI.skin.button) { fontSize = Mathf.RoundToInt(20 * s), fontStyle = FontStyle.Bold };
-        }
+        if (!Mathf.Approximately(s, styleScale)) BuildGuiStyles(s);
         var standings = Standings();
 
         DrawTopPanel(s, standings);
@@ -1143,16 +1174,23 @@ public class RaceManager : MonoBehaviour
 
         if (state == State.Countdown) DrawStartLights(s);
         if (goBannerTimer > 0) Banner(s, "GO!", new Color(0.3f, 1f, 0.4f));
+        if (trackLimitBannerTimer > 0f && trackLimitMsg.Length > 0)
+        {
+            Rect tr = new Rect(Screen.width / 2f - 210 * s, 148 * s, 420 * s, 30 * s);
+            Fill(tr, trackLimitWarnings % 3 == 0 ? new Color(0.85f, 0.15f, 0.12f, 0.92f) : new Color(0.95f, 0.65f, 0.1f, 0.92f), 8 * s);
+            midCenter.normal.textColor = trackLimitWarnings % 3 == 0 ? Color.white : Color.black;
+            GUI.Label(tr, trackLimitMsg, midCenter);
+        }
 
         Vector3 tangent = track.TangentAt(prevD);
-        bool onTrack = Mathf.Abs(playerRacer.lateral) < track.halfWidth + 2f;
+        bool onTrack = Mathf.Abs(playerRacer.lateral) < track.HalfWidthAt(prevD) + 2f;
         if (state == State.Racing && !playerRacer.finished && onTrack && player.Speed > 3f && Vector3.Dot(player.transform.forward, tangent) < -0.3f)
             Banner(s, "WRONG WAY", new Color(1f, 0.3f, 0.25f));
         if (winner != null && !playerRacer.finished && winnerBannerTimer <= 0 && state == State.Racing)
         {
-            var st = new GUIStyle(mid) { alignment = TextAnchor.MiddleCenter };
-            Fill(new Rect(Screen.width / 2f - 200 * s, 128 * s, 400 * s, 34 * s), new Color(0, 0, 0, 0.7f), 8 * s);
-            GUI.Label(new Rect(Screen.width / 2f - 200 * s, 128 * s, 400 * s, 34 * s), "CHEQUERED FLAG - finish this lap", st);
+            midCenter.normal.textColor = Color.white;
+            Fill(new Rect(Screen.width / 2f - 200 * s, 148 * s, 400 * s, 34 * s), new Color(0, 0, 0, 0.7f), 8 * s);
+            GUI.Label(new Rect(Screen.width / 2f - 200 * s, 148 * s, 400 * s, 34 * s), "CHEQUERED FLAG - finish this lap", midCenter);
         }
 
         DrawNameTags(s, standings);
@@ -1168,16 +1206,15 @@ public class RaceManager : MonoBehaviour
 
     void Banner(float s, string text, Color c)
     {
-        var st = new GUIStyle(center);
-        st.normal.textColor = c;
+        bannerStyle.normal.textColor = c;
         Rect r = new Rect(0, Screen.height * 0.3f, Screen.width, 90 * s);
         Fill(new Rect(Screen.width / 2f - 380 * s, r.y, 760 * s, r.height), new Color(0, 0, 0, 0.55f), 16 * s);
-        GUI.Label(r, text, st);
+        GUI.Label(r, text, bannerStyle);
     }
 
     void DrawTopPanel(float s, List<Racer> standings)
     {
-        Rect p = new Rect(Screen.width / 2f - 280 * s, 16 * s, 560 * s, 104 * s);
+        Rect p = new Rect(Screen.width / 2f - 280 * s, 16 * s, 560 * s, 124 * s);
         Fill(p, new Color(0.05f, 0.06f, 0.09f, 0.78f), 14 * s);
         int lap = Mathf.Clamp(crossings, 1, laps);
         int pos = standings.IndexOf(playerRacer) + 1;
@@ -1190,8 +1227,23 @@ public class RaceManager : MonoBehaviour
         GUI.Label(new Rect(p.x + col, p.y + 28 * s, col, 44 * s), "P" + pos + "/" + racers.Count, big);
         GUI.Label(new Rect(p.x + 2 * col, p.y + 8 * s, col, 20 * s), "RACE TIME", small);
         GUI.Label(new Rect(p.x + 2 * col, p.y + 28 * s, col, 44 * s), FormatTime(playerRacer.finished ? playerRacer.finishTime : raceTime), big);
-        GUI.Label(new Rect(p.x, p.y + 76 * s, p.width, 22 * s),
+        GUI.Label(new Rect(p.x, p.y + 74 * s, p.width, 20 * s),
             "LAP " + FormatTime(lapTime) + "     LAST " + FormatTime(lastLap) + "     BEST " + FormatTime(bestLap), small);
+
+        float sw = 166 * s, sh = 20 * s, sx0 = p.x + 18 * s, sy = p.y + 98 * s;
+        for (int k = 0; k < 3; k++)
+        {
+            Rect sr = new Rect(sx0 + k * (sw + 13 * s), sy, sw, sh);
+            int stCode = sectorStatus[k];
+            Color bg = stCode == 3 ? new Color(0.66f, 0.22f, 0.94f, 0.92f)
+                     : stCode == 2 ? new Color(0.16f, 0.78f, 0.34f, 0.92f)
+                     : stCode == 1 ? new Color(0.92f, 0.72f, 0.15f, 0.9f)
+                     : new Color(1f, 1f, 1f, 0.08f);
+            Fill(sr, bg, 6 * s);
+            sectorStyle.normal.textColor = (stCode == 1 || stCode == 2) ? Color.black : Color.white;
+            string txt = "S" + (k + 1) + "  " + (lastSectors[k] > 0f ? lastSectors[k].ToString("0.000") : "--.---");
+            GUI.Label(sr, txt, sectorStyle);
+        }
     }
 
     void DrawStartLights(float s)
@@ -1199,7 +1251,7 @@ public class RaceManager : MonoBehaviour
         int lit = Mathf.Min(5, Mathf.FloorToInt(countdown));
         float size = 46 * s, gap = 14 * s;
         float total = 5 * size + 4 * gap;
-        Rect panel = new Rect(Screen.width / 2f - total / 2f - 16 * s, 136 * s, total + 32 * s, size + 32 * s);
+        Rect panel = new Rect(Screen.width / 2f - total / 2f - 16 * s, 154 * s, total + 32 * s, size + 32 * s);
         Fill(panel, new Color(0.03f, 0.03f, 0.04f, 0.85f), 12 * s);
         for (int i = 0; i < 5; i++)
         {
@@ -1214,37 +1266,29 @@ public class RaceManager : MonoBehaviour
         float rowH = 21 * s, w = 210 * s;
         Rect p = new Rect(16 * s, 232 * s, w, 34 * s + rowH * standings.Count);
         Fill(p, new Color(0.04f, 0.05f, 0.08f, 0.8f), 10 * s);
-        var head = new GUIStyle(small) { alignment = TextAnchor.MiddleLeft, fontStyle = FontStyle.Bold };
-        GUI.Label(new Rect(p.x + 12 * s, p.y + 4 * s, w, 24 * s), "LAP " + Mathf.Clamp(winner != null ? laps : LapOf(standings[0]), 1, laps) + " / " + laps, head);
-        var codeSt = new GUIStyle(mid) { fontSize = Mathf.RoundToInt(14 * s) };
-        var gapSt = new GUIStyle(codeSt) { alignment = TextAnchor.MiddleRight, fontStyle = FontStyle.Normal };
-        var posSt = new GUIStyle(codeSt) { alignment = TextAnchor.MiddleCenter };
+        GUI.Label(new Rect(p.x + 12 * s, p.y + 4 * s, w, 24 * s), "LAP " + Mathf.Clamp(winner != null ? laps : LapOf(standings[0]), 1, laps) + " / " + laps, towerHead);
         Racer leader = standings[0];
         for (int i = 0; i < standings.Count; i++)
         {
             var r = standings[i];
             float y = p.y + 30 * s + i * rowH;
             if (r.isPlayer) Fill(new Rect(p.x + 4 * s, y, w - 8 * s, rowH - 1 * s), new Color(0.15f, 0.4f, 1f, 0.5f), 4 * s);
-            GUI.Label(new Rect(p.x + 4 * s, y, 26 * s, rowH), (i + 1).ToString(), posSt);
+            GUI.Label(new Rect(p.x + 4 * s, y, 26 * s, rowH), (i + 1).ToString(), towerPos);
             Fill(new Rect(p.x + 32 * s, y + 4 * s, 4 * s, rowH - 8 * s), r.color);
-            GUI.Label(new Rect(p.x + 42 * s, y, 60 * s, rowH), r.code, codeSt);
+            GUI.Label(new Rect(p.x + 42 * s, y, 60 * s, rowH), r.code, towerCode);
             if (HasPitLane)
             {
                 Compound c = r.isPlayer ? playerCompound : r.ai.compound;
                 bool inPit = r.isPlayer ? pitPhase != PitPhase.None : r.ai.Pit != RaceAI.PitState.None;
                 Fill(new Rect(p.x + 82 * s, y + 4 * s, rowH - 8 * s, rowH - 8 * s), Tyres.Colors[(int)c], rowH);
-                var tl = new GUIStyle(posSt) { fontSize = Mathf.RoundToInt(9 * s) };
-                tl.normal.textColor = Color.black;
-                GUI.Label(new Rect(p.x + 82 * s, y + 4 * s, rowH - 8 * s, rowH - 8 * s), Tyres.Letters[(int)c], tl);
+                GUI.Label(new Rect(p.x + 82 * s, y + 4 * s, rowH - 8 * s, rowH - 8 * s), Tyres.Letters[(int)c], miniBadge);
                 if (inPit)
                 {
                     Fill(new Rect(p.x + 102 * s, y + 3 * s, 30 * s, rowH - 6 * s), new Color(0.9f, 0.9f, 0.9f), 3 * s);
-                    var pt = new GUIStyle(posSt) { fontSize = Mathf.RoundToInt(10 * s) };
-                    pt.normal.textColor = Color.black;
-                    GUI.Label(new Rect(p.x + 102 * s, y + 3 * s, 30 * s, rowH - 6 * s), "PIT", pt);
+                    GUI.Label(new Rect(p.x + 102 * s, y + 3 * s, 30 * s, rowH - 6 * s), "PIT", miniPit);
                 }
             }
-            GUI.Label(new Rect(p.x + 90 * s, y, w - 100 * s, rowH), r.finished && r != leader && !leader.finished ? "FIN" : GapText(r, leader), gapSt);
+            GUI.Label(new Rect(p.x + 90 * s, y, w - 100 * s, rowH), r.finished && r != leader && !leader.finished ? "FIN" : GapText(r, leader), towerGap);
         }
     }
 
@@ -1265,15 +1309,12 @@ public class RaceManager : MonoBehaviour
         Fill(panel, new Color(0.04f, 0.05f, 0.08f, 0.82f), 16 * s);
         Fill(panel, new Color(1f, 1f, 1f, 0.12f), 16 * s, 1.5f * s);
 
-        var header = new GUIStyle(small) { alignment = TextAnchor.MiddleLeft, fontStyle = FontStyle.Bold };
-        GUI.Label(new Rect(panel.x + 16 * s, panel.y + 8 * s, w - 110 * s, 20 * s), track.trackName.ToUpperInvariant(), header);
+        GUI.Label(new Rect(panel.x + 16 * s, panel.y + 8 * s, w - 110 * s, 20 * s), track.trackName.ToUpperInvariant(), mapHeader);
         for (int k = 0; k < 3; k++)
         {
             Rect chip = new Rect(panel.xMax - (3 - k) * 30 * s - 10 * s, panel.y + 12 * s, 24 * s, 12 * s);
             Fill(chip, SectorColors[k], 4 * s);
-            var cs = new GUIStyle(small) { fontSize = Mathf.RoundToInt(9 * s), fontStyle = FontStyle.Bold };
-            cs.normal.textColor = Color.black;
-            GUI.Label(chip, "S" + (k + 1), cs);
+            GUI.Label(chip, "S" + (k + 1), mapNumBlack);
         }
 
         Rect area = new Rect(panel.x + 24 * s, panel.y + 40 * s, w - 48 * s, w - 48 * s);
@@ -1307,8 +1348,6 @@ public class RaceManager : MonoBehaviour
             Fill(new Rect(m.x - d / 2, m.y - d / 2, d, d), new Color(PlayerBlue.r, PlayerBlue.g, PlayerBlue.b, a * 0.8f), d / 2);
         }
 
-        var num = new GUIStyle(small) { fontSize = Mathf.RoundToInt(9 * s), fontStyle = FontStyle.Bold };
-        num.normal.textColor = Color.black;
         foreach (var r in racers)
         {
             if (r.isPlayer || !r.ai.gameObject.activeSelf) continue;
@@ -1316,9 +1355,7 @@ public class RaceManager : MonoBehaviour
             float d = 14 * s;
             Fill(new Rect(m.x - d / 2 - 1.5f * s, m.y - d / 2 - 1.5f * s, d + 3 * s, d + 3 * s), new Color(0, 0, 0, 0.8f), d);
             Fill(new Rect(m.x - d / 2, m.y - d / 2, d, d), r.color, d / 2);
-            var ns = new GUIStyle(num);
-            ns.normal.textColor = r.color.grayscale > 0.5f ? Color.black : Color.white;
-            GUI.Label(new Rect(m.x - d / 2, m.y - d / 2, d, d), (standings.IndexOf(r) + 1).ToString(), ns);
+            GUI.Label(new Rect(m.x - d / 2, m.y - d / 2, d, d), (standings.IndexOf(r) + 1).ToString(), r.color.grayscale > 0.5f ? mapNumBlack : mapNumWhite);
         }
 
         Vector2 pm = MapPoint(player.transform.position, area);
@@ -1331,9 +1368,7 @@ public class RaceManager : MonoBehaviour
         float pd = 18 * s;
         Fill(new Rect(pm.x - pd / 2 - 2 * s, pm.y - pd / 2 - 2 * s, pd + 4 * s, pd + 4 * s), Color.white, pd);
         Fill(new Rect(pm.x - pd / 2, pm.y - pd / 2, pd, pd), PlayerBlue, pd / 2);
-        var pnum = new GUIStyle(num);
-        pnum.normal.textColor = Color.white;
-        GUI.Label(new Rect(pm.x - pd / 2, pm.y - pd / 2, pd, pd), (standings.IndexOf(playerRacer) + 1).ToString(), pnum);
+        GUI.Label(new Rect(pm.x - pd / 2, pm.y - pd / 2, pd, pd), (standings.IndexOf(playerRacer) + 1).ToString(), mapNumWhite);
 
         float lapFrac = crossings == 0 ? 0f : Mathf.Clamp01(prevD / track.length);
         Rect bar = new Rect(panel.x + 16 * s, panel.yMax - 22 * s, w - 32 * s, 8 * s);
@@ -1353,9 +1388,8 @@ public class RaceManager : MonoBehaviour
         Color green = new Color(0.15f, 0.85f, 0.35f);
         Fill(r, c.DrsOpen ? green : new Color(0.05f, 0.06f, 0.09f, 0.78f), 10 * s);
         if (!c.DrsOpen && c.drsAvailable) { Fill(new Rect(r.x, r.yMax - 6 * s, r.width, 6 * s), green, 3 * s); }
-        var st = new GUIStyle(big) { fontSize = Mathf.RoundToInt(24 * s), alignment = TextAnchor.MiddleCenter };
-        st.normal.textColor = c.DrsOpen ? Color.black : c.drsAvailable ? green : new Color(1f, 1f, 1f, 0.35f);
-        GUI.Label(r, "DRS", st);
+        drsStyle.normal.textColor = c.DrsOpen ? Color.black : c.drsAvailable ? green : new Color(1f, 1f, 1f, 0.35f);
+        GUI.Label(r, "DRS", drsStyle);
     }
 
     // Tyre panel (compound, wear, stop requirement) and pit lane / flag messages
@@ -1367,17 +1401,15 @@ public class RaceManager : MonoBehaviour
         Rect circle = new Rect(p.x + 14 * s, p.y + 14 * s, d, d);
         Fill(circle, Tyres.Colors[(int)playerCompound], d);
         Fill(new Rect(circle.x + 6 * s, circle.y + 6 * s, d - 12 * s, d - 12 * s), new Color(0.08f, 0.08f, 0.09f), d);
-        var letter = new GUIStyle(big) { fontSize = Mathf.RoundToInt(24 * s) };
-        letter.normal.textColor = Tyres.Colors[(int)playerCompound];
-        GUI.Label(circle, Tyres.Letters[(int)playerCompound], letter);
+        tyreLetter.normal.textColor = Tyres.Colors[(int)playerCompound];
+        GUI.Label(circle, Tyres.Letters[(int)playerCompound], tyreLetter);
 
-        var lbl = new GUIStyle(small) { alignment = TextAnchor.MiddleLeft };
-        GUI.Label(new Rect(p.x + 80 * s, p.y + 10 * s, 160 * s, 20 * s), Tyres.Names[(int)playerCompound].ToUpperInvariant() + " TYRES", lbl);
+        GUI.Label(new Rect(p.x + 80 * s, p.y + 10 * s, 160 * s, 20 * s), Tyres.Names[(int)playerCompound].ToUpperInvariant() + " TYRES", smallLeft);
         float life = Mathf.Clamp01(1f - playerWear);
         Rect bar = new Rect(p.x + 80 * s, p.y + 36 * s, 150 * s, 12 * s);
         Fill(bar, new Color(1, 1, 1, 0.12f), 6 * s);
         Fill(new Rect(bar.x, bar.y, bar.width * life, bar.height), Color.Lerp(new Color(1f, 0.25f, 0.2f), new Color(0.3f, 0.9f, 0.4f), life), 6 * s);
-        GUI.Label(new Rect(p.x + 80 * s, p.y + 50 * s, 160 * s, 20 * s), Mathf.RoundToInt(life * 100f) + "% life  ·  stops " + playerPitStops, lbl);
+        GUI.Label(new Rect(p.x + 80 * s, p.y + 50 * s, 160 * s, 20 * s), Mathf.RoundToInt(life * 100f) + "% life  ·  stops " + playerPitStops, smallLeft);
 
         string status = "";
         Color sc = Color.white;
@@ -1389,20 +1421,18 @@ public class RaceManager : MonoBehaviour
         }
         if (status.Length > 0)
         {
-            var st = new GUIStyle(lbl) { fontStyle = FontStyle.Bold, fontSize = Mathf.RoundToInt(13 * s) };
-            st.normal.textColor = sc;
-            GUI.Label(new Rect(p.x + 14 * s, p.y + 76 * s, p.width - 20 * s, 24 * s), status, st);
+            statusBold.normal.textColor = sc;
+            GUI.Label(new Rect(p.x + 14 * s, p.y + 76 * s, p.width - 20 * s, 24 * s), status, statusBold);
         }
 
         if (pitPhase != PitPhase.None)
         {
             Rect b = new Rect(Screen.width / 2f - 300 * s, Screen.height - 190 * s, 600 * s, 110 * s);
             Fill(b, new Color(0.03f, 0.04f, 0.07f, 0.88f), 14 * s);
-            var title = new GUIStyle(mid) { alignment = TextAnchor.MiddleCenter };
             string head = pitPhase == PitPhase.Service ? "PIT STOP  " + pitTimer.ToString("0.0") + " s"
                         : pitPhase == PitPhase.Exit || pitPhase == PitPhase.Release ? "RELEASED - PIT EXIT" : "PIT LANE  ·  LIMITER 80 km/h";
-            title.normal.textColor = pitPhase == PitPhase.Service ? new Color(1f, 0.35f, 0.3f) : new Color(0.4f, 1f, 0.5f);
-            GUI.Label(new Rect(b.x, b.y + 8 * s, b.width, 30 * s), head, title);
+            midCenter.normal.textColor = pitPhase == PitPhase.Service ? new Color(1f, 0.35f, 0.3f) : new Color(0.4f, 1f, 0.5f);
+            GUI.Label(new Rect(b.x, b.y + 8 * s, b.width, 30 * s), head, midCenter);
             bool choosing = pitPhase == PitPhase.Approach || pitPhase == PitPhase.Stopping;
             GUI.Label(new Rect(b.x, b.y + 38 * s, b.width, 22 * s), choosing ? "Choose new tyres:" : "Fitted:", small);
             for (int k = 0; k < 3; k++)
@@ -1412,30 +1442,27 @@ public class RaceManager : MonoBehaviour
                 bool sel = c == shown;
                 Rect r = new Rect(b.x + 60 * s + k * 165 * s, b.y + 62 * s, 150 * s, 36 * s);
                 Fill(r, sel ? Tyres.Colors[k] : new Color(1, 1, 1, 0.08f), 8 * s);
-                var t = new GUIStyle(mid) { alignment = TextAnchor.MiddleCenter, fontSize = Mathf.RoundToInt(15 * s) };
-                t.normal.textColor = sel ? Color.black : Color.white;
-                GUI.Label(r, (k + 1) + "  " + Tyres.Names[k].ToUpperInvariant(), t);
+                pitChoiceStyle.normal.textColor = sel ? Color.black : Color.white;
+                GUI.Label(r, (k + 1) + "  " + Tyres.Names[k].ToUpperInvariant(), pitChoiceStyle);
             }
         }
 
         // Yellow flag in the section ahead of the player
         if (Time.time - incidentTime < 10f && InWindow(prevD, incidentD - 300f, incidentD + 20f, track.length))
         {
-            Rect y = new Rect(Screen.width / 2f - 160 * s, 176 * s, 320 * s, 34 * s);
+            Rect y = new Rect(Screen.width / 2f - 160 * s, 184 * s, 320 * s, 34 * s);
             Fill(y, new Color(1f, 0.85f, 0.1f, 0.95f), 6 * s);
-            var st = new GUIStyle(mid) { alignment = TextAnchor.MiddleCenter };
-            st.normal.textColor = Color.black;
-            GUI.Label(y, "YELLOW FLAG - incident ahead", st);
+            midCenter.normal.textColor = Color.black;
+            GUI.Label(y, "YELLOW FLAG - incident ahead", midCenter);
         }
     }
 
     void DrawFinishedStrip(float s, List<Racer> standings)
     {
-        Rect p = new Rect(Screen.width / 2f - 330 * s, 128 * s, 660 * s, 40 * s);
+        Rect p = new Rect(Screen.width / 2f - 330 * s, 148 * s, 660 * s, 40 * s);
         Fill(p, new Color(0.05f, 0.06f, 0.09f, 0.8f), 10 * s);
-        var st = new GUIStyle(mid) { alignment = TextAnchor.MiddleCenter };
-        st.normal.textColor = new Color(1f, 0.85f, 0.2f);
-        GUI.Label(p, "WINNER: " + winner.name + "   ·   You finished P" + (finishOrder.IndexOf(playerRacer) + 1) + "   ·   TAB: results", st);
+        midCenter.normal.textColor = new Color(1f, 0.85f, 0.2f);
+        GUI.Label(p, "WINNER: " + winner.name + "   ·   You finished P" + (finishOrder.IndexOf(playerRacer) + 1) + "   ·   TAB: results", midCenter);
 #if ENABLE_INPUT_SYSTEM
         if (Keyboard.current != null && Keyboard.current.tabKey.wasPressedThisFrame) resultsTimer = 999f;
 #endif
@@ -1451,15 +1478,15 @@ public class RaceManager : MonoBehaviour
 
         var first = standings[0];   // after penalties
         bool youWon = first == playerRacer;
-        var title = new GUIStyle(big);
-        title.normal.textColor = youWon ? new Color(1f, 0.85f, 0.2f) : Color.white;
-        GUI.Label(new Rect(p.x, p.y + 10 * s, p.width, 44 * s), youWon ? "YOU WIN!" : "WINNER: " + first.name.ToUpperInvariant(), title);
+        bannerStyle.normal.textColor = youWon ? new Color(1f, 0.85f, 0.2f) : Color.white;
+        int savedFs = bannerStyle.fontSize;
+        bannerStyle.fontSize = big.fontSize;
+        GUI.Label(new Rect(p.x, p.y + 10 * s, p.width, 44 * s), youWon ? "YOU WIN!" : "WINNER: " + first.name.ToUpperInvariant(), bannerStyle);
+        bannerStyle.fontSize = savedFs;
         string sub = track.trackName.ToUpperInvariant() + "  ·  " + laps + " LAPS  ·  BEST LAP " + FormatTime(bestLap);
         if (penaltyNote.Length > 0) sub += "  ·  " + penaltyNote;
         GUI.Label(new Rect(p.x, p.y + 52 * s, p.width, 22 * s), sub, small);
 
-        var nameSt = new GUIStyle(mid) { fontSize = Mathf.RoundToInt(15 * s) };
-        var right = new GUIStyle(nameSt) { alignment = TextAnchor.MiddleRight, fontStyle = FontStyle.Normal };
         Racer leader = standings[0];
         for (int i = 0; i < rows; i++)
         {
@@ -1467,12 +1494,12 @@ public class RaceManager : MonoBehaviour
             float y = p.y + 80 * s + i * rowH;
             if (r.isPlayer) Fill(new Rect(p.x + 16 * s, y, p.width - 32 * s, rowH - 2 * s), new Color(0.15f, 0.4f, 1f, 0.45f), 6 * s);
             Fill(new Rect(p.x + 64 * s, y + 5 * s, 4 * s, rowH - 10 * s), r.color);
-            GUI.Label(new Rect(p.x + 24 * s, y, 40 * s, rowH), (i + 1).ToString(), nameSt);
+            GUI.Label(new Rect(p.x + 24 * s, y, 40 * s, rowH), (i + 1).ToString(), resultsName);
             string team = GameSession.Teams.Length > r.team && useSession ? GameSession.Teams[r.team].name : "";
-            GUI.Label(new Rect(p.x + 76 * s, y, 330 * s, rowH), r.name + (team.Length > 0 ? "  —  " + team : ""), nameSt);
+            GUI.Label(new Rect(p.x + 76 * s, y, 330 * s, rowH), r.name + (team.Length > 0 ? "  —  " + team : ""), resultsName);
             int pts = useSession && i < GameSession.Points.Length ? GameSession.Points[i] : 0;
-            GUI.Label(new Rect(p.x + 24 * s, y, p.width - 120 * s, rowH), r.finished ? GapText(r, leader) : "running", right);
-            GUI.Label(new Rect(p.x + 24 * s, y, p.width - 48 * s, rowH), pts > 0 ? "+" + pts : "", right);
+            GUI.Label(new Rect(p.x + 24 * s, y, p.width - 120 * s, rowH), r.finished ? GapText(r, leader) : "running", resultsRight);
+            GUI.Label(new Rect(p.x + 24 * s, y, p.width - 48 * s, rowH), pts > 0 ? "+" + pts : "", resultsRight);
         }
 
         float by = p.yMax - 56 * s, bw = 190 * s;
