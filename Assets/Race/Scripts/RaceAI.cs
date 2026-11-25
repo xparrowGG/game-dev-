@@ -102,11 +102,11 @@ public class RaceAI : MonoBehaviour
     public void ApplyImpact(Vector3 dv, Vector3 point)
     {
         Speed = Mathf.Max(0f, Speed + Vector3.Dot(dv, transform.forward));
-        lateralVel = Mathf.Clamp(lateralVel + Vector3.Dot(dv, transform.right), -12f, 12f);
+        lateralVel = Mathf.Clamp(lateralVel + Vector3.Dot(dv, transform.right), -6f, 6f);
         Vector3 lever = point - transform.position; lever.y = 0;
-        wobbleVel = Mathf.Clamp(wobbleVel + Vector3.Cross(lever, dv).y * 3.5f, -65f, 65f);
-        wobble = Mathf.Clamp(wobble, -18f, 18f);
-        recoverTimer = Mathf.Clamp(dv.magnitude * 0.18f, 0.4f, 1.6f);
+        wobbleVel = Mathf.Clamp(wobbleVel + Vector3.Cross(lever, dv).y * 2.2f, -35f, 35f);
+        wobble = Mathf.Clamp(wobble, -10f, 10f);
+        recoverTimer = Mathf.Clamp(dv.magnitude * 0.10f, 0.35f, 0.85f);
     }
 
     float GripFactor => manager != null && manager.HasPitLane ? Tyres.GripFactor(compound, tyreWear) : 1f;
@@ -186,7 +186,7 @@ public class RaceAI : MonoBehaviour
                     if (!blocked && racing && !finished)
                     {
                         laneTarget = track.RacingLineOffsetAt(progress);
-                        laneSpeed = 3.2f;
+                        laneSpeed = progress < 380f ? 2.0f : 3.2f;
                     }
                     bool hasAheadDrs = false;
                     foreach (var r in manager.racers)
@@ -396,9 +396,10 @@ public class RaceAI : MonoBehaviour
         }
         if (!float.IsNaN(bestLane)) laneTarget = bestLane;
 
-        // Until we are clear sideways, keep a following gap of about 7 m to the car ahead
+        // Until we are clear sideways, keep a generous opening-lap gap (~9.5m) then ~7m
+        float minGap = progress < 380f ? 9.5f : 7f;
         float gap = blocker.progress - progress;
-        limit = Mathf.Max(0f, blocker.speed + (gap - 7f) * 1.2f);
+        limit = Mathf.Max(0f, blocker.speed + (gap - minGap) * 1.2f);
         return limit;
     }
 

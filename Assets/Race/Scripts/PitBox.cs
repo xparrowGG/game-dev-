@@ -72,27 +72,26 @@ public class PitBox : MonoBehaviour
             return null;
         }
 
-        static void CaptureLimb(Transform charRoot, Transform bone, Transform child, Vector3 fallbackRootDir, out Quaternion restRot, out Vector3 restDirRoot)
+        static void CaptureLimb(Transform charRoot, Transform bone, Transform child, Vector3 fallbackRootDir, out Quaternion restRot, out Vector3 restLocalDir)
         {
             restRot = bone != null ? bone.localRotation : Quaternion.identity;
-            restDirRoot = fallbackRootDir;
+            restLocalDir = Vector3.up;
             if (bone == null || bone.parent == null || charRoot == null) return;
             if (child != null)
             {
-                Vector3 v = charRoot.InverseTransformPoint(child.position) - charRoot.InverseTransformPoint(bone.position);
-                if (v.sqrMagnitude > 1e-6f) restDirRoot = v.normalized;
+                Vector3 v = bone.InverseTransformPoint(child.position);
+                if (v.sqrMagnitude > 1e-6f) { restLocalDir = v.normalized; return; }
             }
+            restLocalDir = bone.InverseTransformDirection(charRoot.TransformDirection(fallbackRootDir)).normalized;
         }
 
-        static void AimBone(Transform bone, Quaternion restRot, Vector3 restDirChar, Vector3 desiredDirChar, Transform charRoot)
+        static void AimBone(Transform bone, Quaternion restRot, Vector3 restLocalDir, Vector3 desiredDirChar, Transform charRoot)
         {
             if (bone == null || bone.parent == null || desiredDirChar.sqrMagnitude < 1e-5f) return;
-            desiredDirChar.Normalize();
-            Vector3 dFrom = charRoot.TransformDirection(restDirChar);
-            Vector3 dTo = charRoot.TransformDirection(desiredDirChar);
-            Quaternion worldDelta = Quaternion.FromToRotation(dFrom, dTo);
-            Quaternion restWorld = bone.parent.rotation * restRot;
-            bone.rotation = worldDelta * restWorld;
+            Quaternion neutralWorld = bone.parent.rotation * restRot;
+            Vector3 dFrom = neutralWorld * restLocalDir;
+            Vector3 dTo = charRoot.TransformDirection(desiredDirChar.normalized);
+            bone.rotation = Quaternion.FromToRotation(dFrom, dTo) * neutralWorld;
         }
 
         public void ApplyPose(Transform charRoot, float kneel, float runCycle, float runWeight, Vector3 armTargetDirL, Vector3 armTargetDirR, float torsoLeanDeg, float headYawDeg = 0f, float headPitchDeg = 0f)
@@ -102,7 +101,7 @@ public class PitBox : MonoBehaviour
             runWeight = Mathf.Clamp01(runWeight);
 
             if (hips != null)
-                hips.localPosition = rHipsPos + hipsUpInParent * (-0.34f * kneel + Mathf.Abs(Mathf.Sin(runCycle)) * 0.04f * runWeight);
+                hips.localPosition = rHipsPos + hipsUpInParent * (-0.32f * kneel + Mathf.Abs(Mathf.Sin(runCycle)) * 0.04f * runWeight);
             if (torso != null && torso.parent != null)
                 torso.rotation = Quaternion.AngleAxis(torsoLeanDeg, charRoot.right) * (torso.parent.rotation * rTorso);
             if (head != null && head.parent != null)
@@ -124,16 +123,19 @@ public class PitBox : MonoBehaviour
             AimBone(upperLegR, rULR, dirULR, ulR, charRoot);
             AimBone(lowerLegR, rLLR, dirLLR, llR, charRoot);
 
-            // Arms: never leave in T-pose! Blend run swing with role target directions in character-local space
-            Vector3 runSwingL = new Vector3(-0.22f, -0.82f, -strideL * 0.7f);
-            Vector3 runSwingR = new Vector3(0.22f, -0.82f, -strideR * 0.7f);
+            // Arms: exact world-space aiming with neutral parent continuation (no double rotation!)
+            Vector3 runSwingL = new Vector3(-0.18f, -0.86f, -strideL * 0.7f);
+            Vector3 runSwingR = new Vector3(0.18f, -0.86f, -strideR * 0.7f);
             Vector3 dArmL = Vector3.Lerp(armTargetDirL, runSwingL, runWeight * (1f - kneel));
             Vector3 dArmR = Vector3.Lerp(armTargetDirR, runSwingR, runWeight * (1f - kneel));
 
+            Vector3 foreL = Vector3.Lerp(dArmL, new Vector3(-0.08f, -0.18f, 0.98f), 0.55f * (1f - runWeight * (1f - kneel)));
+            Vector3 foreR = Vector3.Lerp(dArmR, new Vector3(0.08f, -0.18f, 0.98f), 0.55f * (1f - runWeight * (1f - kneel)));
+
             AimBone(upperArmL, rUAL, dirUAL, dArmL, charRoot);
-            AimBone(lowerArmL, rLAL, dirLAL, Vector3.Lerp(dArmL, dArmL + Vector3.forward * 0.45f, 0.6f), charRoot);
+            AimBone(lowerArmL, rLAL, dirLAL, foreL, charRoot);
             AimBone(upperArmR, rUAR, dirUAR, dArmR, charRoot);
-            AimBone(lowerArmR, rLAR, dirLAR, Vector3.Lerp(dArmR, dArmR + Vector3.forward * 0.45f, 0.6f), charRoot);
+            AimBone(lowerArmR, rLAR, dirLAR, foreR, charRoot);
         }
     }
 
@@ -307,27 +309,31 @@ public class PitBox : MonoBehaviour
             return p.transform;
         }
 
-        // Front & Rear Jack Men with Prop_PitJack
-        var fj = Add(Role.FrontJack, -1, new Vector3(0, 0, 3.65f), new Vector3(0, 0, 4.6f), new Vector3(gx * 2.45f, 0, 3.85f));
+        // Front & Rear Jack Men with Prop_PitJack (RearJack offset to rear-quarter so chase camera stays clear)
+        var fj = Add(Role.FrontJack, -1, new Vector3(0, 0, 3.65f), new Vector3(0, 0, 4.6f), new Vector3(gx * 2.50f, 0, 4.05f));
         fj.prop = AttachTool(fj, prefabJack, fj.t, new Vector3(0f, 0f, 0.85f), Quaternion.Euler(0, 180f, 0));
 
-        var rj = Add(Role.RearJack, -1, new Vector3(0, 0, -3.45f), new Vector3(gx * 2.15f, 0, -3.7f), new Vector3(gx * 2.45f, 0, -3.7f));
+        var rj = Add(Role.RearJack, -1, new Vector3(gx * 0.55f, 0, -3.55f), new Vector3(gx * 2.15f, 0, -3.8f), new Vector3(gx * 2.50f, 0, -4.05f));
         rj.prop = AttachTool(rj, prefabJack, rj.t, new Vector3(0f, 0f, 0.85f), Quaternion.Euler(0, 180f, 0));
 
-        // 4 Corners: Gunner (Prop_WheelGun), TyreOff, TyreOn
+        // 4 Corners: Gunner (Prop_WheelGun), TyreOff, TyreOn (staggered two-row home formation >= 0.70m apart)
+        float[] homeGunZ = { 2.65f, 1.95f, -1.95f, -2.65f };
+        float[] homeOffZ = { 3.55f, 1.45f, -2.15f, -3.55f };
+        float[] homeOnZ  = { 0.75f, 0.05f, -0.65f, -1.35f };
         for (int c = 0; c < 4; c++)
         {
             Vector3 w = Wheels[c];
             float sx = Mathf.Sign(w.x), front = c < 2 ? 1f : -1f;
-            float homeX = gx * (2.35f + (c % 2) * 0.15f);
             bool onGarageSide = Mathf.Sign(sx) == Mathf.Sign(gx);
-            var gun = Add(Role.Gunner, c, new Vector3(w.x + sx * 0.78f, 0, w.z), new Vector3(onGarageSide ? gx * 2.10f : w.x + sx * 1.45f, 0, w.z), new Vector3(homeX, 0, w.z + 0.6f));
-            gun.prop = AttachTool(gun, prefabGun, gun.rig.fistR ?? gun.t, gun.rig.fistR != null ? Vector3.zero : new Vector3(0, 0.52f, 0.35f), Quaternion.Euler(0f, 0f, 0f));
+            float fastSideOff = 0.72f;
+            float fastReadyOff = 0.95f;
+            var gun = Add(Role.Gunner, c, new Vector3(w.x + sx * (onGarageSide ? 0.88f : fastSideOff), 0, w.z), new Vector3(onGarageSide ? gx * 2.15f : w.x + sx * fastReadyOff, 0, w.z), new Vector3(gx * 2.50f, 0, homeGunZ[c]));
+            gun.prop = AttachTool(gun, prefabGun, gun.rig.fistR ?? gun.t, gun.rig.fistR != null ? new Vector3(0f, 0.08f, 0f) : new Vector3(0, 0.52f, 0.35f), Quaternion.identity);
 
-            var off = Add(Role.TyreOff, c, new Vector3(w.x + sx * 0.85f, 0, w.z + front * 0.62f), new Vector3(onGarageSide ? gx * 2.20f : w.x + sx * 1.65f, 0, w.z + front * 0.78f), new Vector3(homeX, 0, w.z + front * 1.4f));
-            off.stack = new Vector3(onGarageSide ? gx * 2.35f : w.x + sx * 2.35f, 0, w.z + front * 0.90f);
+            var off = Add(Role.TyreOff, c, new Vector3(w.x + sx * (onGarageSide ? 0.90f : fastSideOff), 0, w.z + front * 0.65f), new Vector3(onGarageSide ? gx * 2.25f : w.x + sx * (fastReadyOff + 0.15f), 0, w.z + front * 0.78f), new Vector3(gx * 3.05f, 0, homeOffZ[c]));
+            off.stack = new Vector3(gx * 2.35f, 0, w.z + front * 0.90f);
 
-            Add(Role.TyreOn, c, new Vector3(w.x + sx * 0.85f, 0, w.z - front * 0.62f), new Vector3(onGarageSide ? gx * 2.25f : w.x + sx * 2.25f, 0, w.z - front * 0.25f), new Vector3(homeX, 0, w.z - front * 0.8f));
+            Add(Role.TyreOn, c, new Vector3(w.x + sx * (onGarageSide ? 0.90f : fastSideOff), 0, w.z - front * 0.65f), new Vector3(onGarageSide ? gx * 2.30f : w.x + sx * (fastReadyOff + 0.30f), 0, w.z - front * 0.25f), new Vector3(gx * 3.05f, 0, homeOnZ[c]));
 
             oldTyre[c] = Tyre(rubber, c < 2);
             newTyre[c] = Tyre(rubber, c < 2);
@@ -336,12 +342,12 @@ public class PitBox : MonoBehaviour
         }
 
         // Side Stabilisers
-        Add(Role.Stabiliser, 0, new Vector3(-1.35f, 0, 0.1f), new Vector3(-2.0f, 0, 0.2f), new Vector3(gx * 2.45f, 0, 0.5f));
-        Add(Role.Stabiliser, 1, new Vector3(1.35f, 0, 0.1f), new Vector3(2.0f, 0, 0.2f), new Vector3(gx * 2.45f, 0, -0.5f));
+        Add(Role.Stabiliser, 0, new Vector3(-1.35f, 0, 0.1f), new Vector3(-2.0f, 0, 0.2f), new Vector3(gx * 2.50f, 0, 1.15f));
+        Add(Role.Stabiliser, 1, new Vector3(1.35f, 0, 0.1f), new Vector3(2.0f, 0, 0.2f), new Vector3(gx * 2.50f, 0, -1.15f));
 
         // 2 Front Wing Replacement Mechanics + Spare Wing prop textured with team livery
-        var fw0 = Add(Role.WingCrew, 0, new Vector3(-1.05f, 0, 2.55f), new Vector3(gx * 2.25f, 0, 2.6f), new Vector3(gx * 2.45f, 0, 2.4f));
-        var fw1 = Add(Role.WingCrew, 1, new Vector3(1.05f, 0, 2.55f), new Vector3(gx * 2.25f, 0, 2.1f), new Vector3(gx * 2.45f, 0, 1.9f));
+        var fw0 = Add(Role.WingCrew, 0, new Vector3(-1.05f, 0, 2.55f), new Vector3(gx * 2.25f, 0, 2.6f), new Vector3(gx * 3.05f, 0, 2.85f));
+        var fw1 = Add(Role.WingCrew, 1, new Vector3(1.05f, 0, 2.55f), new Vector3(gx * 2.25f, 0, 2.1f), new Vector3(gx * 3.05f, 0, 2.15f));
         if (prefabWing != null)
         {
             var wingGo = Instantiate(prefabWing, transform);
@@ -357,10 +363,10 @@ public class PitBox : MonoBehaviour
         }
 
         // 2 Race Engineers (tablets + headsets) & 2 Garage Workers (hi-vis vests) stationed cleanly on tarmac apron
-        Add(Role.Engineer, 0, new Vector3(gx * 2.55f, 0, 0.45f), new Vector3(gx * 2.55f, 0, 0.45f), new Vector3(gx * 2.60f, 0, 0.45f));
-        Add(Role.Engineer, 1, new Vector3(gx * 2.55f, 0, -0.55f), new Vector3(gx * 2.55f, 0, -0.55f), new Vector3(gx * 2.60f, 0, -0.55f));
-        Add(Role.Worker, 0, new Vector3(gx * 2.35f, 0, 3.55f), new Vector3(gx * 2.25f, 0, 3.55f), new Vector3(gx * 2.50f, 0, 3.65f));
-        Add(Role.Worker, 1, new Vector3(gx * 2.35f, 0, -3.55f), new Vector3(gx * 2.25f, 0, -3.55f), new Vector3(gx * 2.50f, 0, -3.65f));
+        Add(Role.Engineer, 0, new Vector3(gx * 2.55f, 0, 0.38f), new Vector3(gx * 2.55f, 0, 0.38f), new Vector3(gx * 2.50f, 0, 0.38f));
+        Add(Role.Engineer, 1, new Vector3(gx * 2.55f, 0, -0.38f), new Vector3(gx * 2.55f, 0, -0.38f), new Vector3(gx * 2.50f, 0, -0.38f));
+        Add(Role.Worker, 0, new Vector3(gx * 2.35f, 0, 3.35f), new Vector3(gx * 2.25f, 0, 3.35f), new Vector3(gx * 2.50f, 0, 3.35f));
+        Add(Role.Worker, 1, new Vector3(gx * 2.35f, 0, -3.35f), new Vector3(gx * 2.25f, 0, -3.35f), new Vector3(gx * 2.50f, 0, -3.35f));
 
         // Team Overhead Pit Gantry & Release Light directly over/beside box on garage side (clear of Worker 0)
         Part(PrimitiveType.Cylinder, transform, new Vector3(gx * 2.65f, 1.9f, 4.35f), new Vector3(0.09f, 1.9f, 0.09f), gantryDark);
@@ -386,8 +392,9 @@ public class PitBox : MonoBehaviour
         {
             var props = Instantiate(propsPrefab, transform);
             props.name = "PitProps";
-            props.transform.localPosition = new Vector3(gx * 2.50f, 0f, -4.65f);
-            props.transform.localRotation = Quaternion.Euler(0f, gx > 0f ? -90f : 90f, 0f);
+            props.transform.localPosition = new Vector3(gx * 3.15f, 0f, -3.85f);
+            props.transform.localRotation = Quaternion.identity;
+            props.transform.localScale = Vector3.one * 0.52f;
             foreach (var col in props.GetComponentsInChildren<Collider>(true))
                 if (Application.isPlaying) Destroy(col); else DestroyImmediate(col);
         }
@@ -577,11 +584,11 @@ public class PitBox : MonoBehaviour
                 switch (m.role)
                 {
                     case Role.Gunner:
-                        kneel = inBlend * 0.92f;
-                        lean = Mathf.Lerp(4f, 26f, inBlend);
-                        headPitch = Mathf.Lerp(0f, 18f, inBlend);
-                        armL = Vector3.Lerp(armL, new Vector3(-0.18f, -0.15f, 0.95f), inBlend);
-                        armR = Vector3.Lerp(armR, new Vector3(0.18f, -0.10f, 0.98f), inBlend);
+                        kneel = inBlend * 0.88f;
+                        lean = Mathf.Lerp(4f, 18f, inBlend);
+                        headPitch = Mathf.Lerp(0f, 16f, inBlend);
+                        armL = Vector3.Lerp(armL, new Vector3(-0.14f, -0.45f, 0.88f), inBlend);
+                        armR = Vector3.Lerp(armR, new Vector3(0.14f, -0.45f, 0.88f), inBlend);
                         break;
                     case Role.TyreOff:
                     case Role.TyreOn:

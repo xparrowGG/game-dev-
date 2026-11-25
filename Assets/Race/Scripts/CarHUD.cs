@@ -77,7 +77,7 @@ public class CarHUD : MonoBehaviour
     void OnGUI()
     {
         if (car == null) return;
-        float s = Screen.height / 1080f;
+        float s = Mathf.Min(Screen.height / 1080f, Screen.width / 1920f);
         if (!Mathf.Approximately(s, styleScale)) BuildStyles(s);
 
         DrawSpeedometer(s);
@@ -88,7 +88,7 @@ public class CarHUD : MonoBehaviour
     void DrawSpeedometer(float s)
     {
         float r = 125 * s;
-        Vector2 c = new Vector2(Screen.width - 175 * s, Screen.height - 165 * s);
+        Vector2 c = new Vector2(Screen.width - 178 * s, Screen.height - 170 * s);
         Rect disc = new Rect(c.x - r - 18 * s, c.y - r - 18 * s, 2 * (r + 18 * s), 2 * (r + 18 * s));
         Fill(disc, new Color(0.05f, 0.06f, 0.09f, 0.75f), r + 18 * s);
         Fill(disc, new Color(1, 1, 1, 0.18f), r + 18 * s, 3 * s);

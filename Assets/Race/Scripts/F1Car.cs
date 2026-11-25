@@ -23,7 +23,7 @@ public class F1Car : VehicleBase
     public float peakTorque = 620f;             // Nm at the crank
     public float idleRpm = 4000f;
     public float redline = 12500f;
-    public float[] gearRatios = { 19.2f, 14.0f, 11.0f, 9.0f, 7.6f, 6.5f, 5.6f, 4.94f };   // overall, incl. final drive
+    public float[] gearRatios = { 19.2f, 14.0f, 11.0f, 8.9f, 7.4f, 6.25f, 5.32f, 4.78f };   // overall, incl. final drive
     public float reverseRatio = 16f;
     public float drivetrainEfficiency = 0.92f;
     public float shiftTime = 0.05f;
@@ -37,7 +37,7 @@ public class F1Car : VehicleBase
 
     [Header("Aerodynamics")]
     public float downforceArea = 5.0f;          // Cl·A
-    public float dragArea = 0.95f;              // Cd·A
+    public float dragArea = 0.98f;              // Cd·A
     [Range(0, 1)] public float aeroBalanceFront = 0.44f;
     public float airDensity = 1.225f;
 
@@ -54,16 +54,16 @@ public class F1Car : VehicleBase
     [Range(0, 1)] public float brakeBias = 0.64f;
 
     [Header("Steering")]
-    public float maxSteerAngle = 20f;
-    public float steerSpeed = 110f;             // deg/s at the wheels
+    public float maxSteerAngle = 30f;
+    public float steerSpeed = 135f;             // deg/s at the wheels
 
     [Header("Suspension")]
     public float frontAxleZ = 1.8f, rearAxleZ = -1.8f;
     public float frontTrack = 0.8f, rearTrack = 0.78f;      // half track
-    public float restLength = 0.10f;
-    public float springRate = 120000f;
+    public float restLength = 0.14f;
+    public float springRate = 112000f;
     public float damperRate = 7000f;
-    public float antiRoll = 40000f;
+    public float antiRoll = 42000f;
 
     [Header("Assists")]
     public bool abs = true;
@@ -152,7 +152,7 @@ public class F1Car : VehicleBase
         rb.constraints = RigidbodyConstraints.None;
         rb.interpolation = RigidbodyInterpolation.Interpolate;
         rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
-        rb.maxDepenetrationVelocity = 0.65f;   // barriers resolve smoothly without vibration or flinging
+        rb.maxDepenetrationVelocity = 2.6f;    // crisp barrier pushback without wedging or tunneling
         bodyCollider = GetComponent<Collider>();
         // Carbon on steel: zero bounce, low friction so wall hits slide smoothly without shuddering
         if (bodyCollider != null)
@@ -258,7 +258,17 @@ public class F1Car : VehicleBase
         // Digital keys are eased in like a driver squeezing the pedal; analog input is used directly
         inThrottle = analogPedals ? throttleKey : Mathf.MoveTowards(inThrottle, throttleKey, (throttleKey > inThrottle ? 3.5f : 9f) * dt);
         inBrake = analogPedals ? brakeKey : Mathf.MoveTowards(inBrake, brakeKey, (brakeKey > inBrake ? 14f : 12f) * dt);
-        inSteer = analogSteer ? steerKey : steerKey;
+        if (analogSteer)
+        {
+            inSteer = Mathf.Sign(steerKey) * Mathf.Pow(Mathf.Abs(steerKey), 1.25f);
+        }
+        else
+        {
+            float speed01 = Mathf.Clamp01(Mathf.Abs(Speed) / 78f);
+            bool returning = Mathf.Abs(steerKey) < Mathf.Abs(inSteer) || (steerKey * inSteer < 0f);
+            float steerRate = returning ? 11.5f : Mathf.Lerp(7.2f, 3.5f, speed01);
+            inSteer = Mathf.MoveTowards(inSteer, steerKey, steerRate * dt);
+        }
 
         if (resetPressed)
         {
@@ -294,9 +304,16 @@ public class F1Car : VehicleBase
     {
         Speed = v;
         steerAngle = Mathf.MoveTowards(steerAngle, Mathf.Clamp(visualSteerDeg, -maxSteerAngle, maxSteerAngle), 140f * Time.fixedDeltaTime);
-        gear = v < 0.4f ? 0 : (v > 24f ? 3 : 2);
-        rpm = v < 0.4f ? idleRpm : Mathf.Clamp(idleRpm + v / 34f * 4500f, idleRpm, redline);
-        ThrottleInput = v > 1f ? 0.35f : 0.05f;
+        if (v < 0.4f) gear = 0;
+        else if (v < 14f) gear = 1;
+        else if (v < 24f) gear = 2;
+        else if (v < 33f) gear = 3;
+        else gear = 4;
+        float ratio = gear > 0 ? gearRatios[gear - 1] : 0f;
+        float wheelRpm = ratio > 0f ? Mathf.Abs(v) / tyreRadius * ratio * 60f / (2f * Mathf.PI) : idleRpm;
+        rpm = Mathf.Clamp(Mathf.Max(idleRpm, wheelRpm), idleRpm, redline);
+        ThrottleInput = v > 1f ? Mathf.Clamp(0.28f + v * 0.015f, 0.28f, 0.85f) : 0.05f;
+        UpdateWheelVisuals(Time.fixedDeltaTime);
     }
 
     public void OnPitExitHandoff(Vector3 exitVelocity, Quaternion exitRotation)
@@ -345,8 +362,103 @@ public class F1Car : VehicleBase
         float absV = Mathf.Abs(vLong);
         Speed = vLong;
 
+        // Continuous anti-tunnel lookahead: full pre-contact clamping in EditMode test harness, last-centimeter guard only in PlayMode
+        bool lookaheadPreContact = false;
+        bool scriptSim = Physics.simulationMode == SimulationMode.Script;
+        if (vLong > (scriptSim ? 26f : 38f) && TripTime > 0.25f)
+        {
+            Vector3 probeOrigin = transform.TransformPoint(0f, 0.44f, 1.30f);
+            Vector3 probeDir = vel.sqrMagnitude > 1f ? vel.normalized : fwd;
+            const float bumperOffset = 1.63f; // probe at z=1.30, Collider_Body nose at z=2.93
+            float maxAdvance = vel.magnitude * dt * 1.45f;
+            float lookDist = Mathf.Clamp(bumperOffset + maxAdvance + 0.20f, 1.85f, 4.6f);
+            int lh = Physics.SphereCastNonAlloc(probeOrigin, 0.28f, probeDir, noseHits, lookDist, ~0, QueryTriggerInteraction.Ignore);
+            float bestLookDist = float.MaxValue;
+            int bestL = -1;
+            for (int i = 0; i < lh; i++)
+            {
+                var h = noseHits[i];
+                if (h.collider.transform.IsChildOf(transform) || h.collider.attachedRigidbody != null || Mathf.Abs(h.normal.y) >= 0.55f) continue;
+                if (h.collider.name.Contains("Asphalt") || h.collider.name.Contains("Kerb")) continue;
+                if (h.distance < bestLookDist) { bestLookDist = h.distance; bestL = i; }
+            }
+            if (bestL >= 0)
+            {
+                var hit = noseHits[bestL];
+                Vector3 wn = new Vector3(hit.normal.x, 0f, hit.normal.z);
+                if (wn.sqrMagnitude > 1e-4f)
+                {
+                    wn.Normalize();
+                    float vIn = Vector3.Dot(vel, wn);
+                    float closing = vIn < 0f ? -vIn : 0f;
+                    float surfaceGap = hit.distance + 0.28f - bumperOffset;
+                    float maxSafeInto = Mathf.Max(0f, surfaceGap) / dt;
+                    if ((scriptSim || surfaceGap <= 0.05f) && closing > 25f && closing > maxSafeInto)
+                    {
+                        bool headOn = Vector3.Dot(fwd, wn) <= -0.96f;
+                        Vector3 vHoriz = new Vector3(vel.x, 0f, vel.z);
+                        Vector3 vTan = vHoriz - wn * vIn;
+                        float clampedInto;
+                        if (!headOn || surfaceGap <= 0.05f)
+                        {
+                            // Glancing impact (front corner leads center probe) or already flush: transition smoothly into tangential scrape
+                            lastWallNormal = wn;
+                            wallContactTimer = 0.14f;
+                            clampedInto = 0f;
+                        }
+                        else
+                        {
+                            // Direct head-on impact: close remaining nose gap gently onto flush contact without rebound
+                            lookaheadPreContact = true;
+                            clampedInto = Mathf.Min(closing, Mathf.Clamp(surfaceGap * 10f, 1.8f, 5.0f));
+                        }
+                        vTan *= Mathf.Lerp(0.98f, 0.88f, Mathf.Clamp01(closing / 40f));
+                        Vector3 newV = vTan - wn * clampedInto;
+                        newV.y = Mathf.Min(vel.y, 0.01f);
+                        rb.linearVelocity = newV;
+                        vel = newV;
+                        vLong = Vector3.Dot(vel, fwd);
+                        absV = Mathf.Abs(vLong);
+                        if (TripTime - lastImpactLogTime > 0.22f)
+                        {
+                            lastImpactLogTime = TripTime;
+                            RegisterImpact(closing, hit.point);
+                        }
+                        else if (!FrontWingLost && closing > wingBreakDeltaV)
+                        {
+                            BreakFrontWing();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Low-speed head-on pinned-wall contact sensor (keeps wallContactTimer active in both PlayMode and EditMode)
+        if (throttle > 0.1f && gear != -1 && absV < 8f && TripTime > 0.25f)
+        {
+            Vector3 probeOrigin = transform.TransformPoint(0f, 0.44f, 1.30f);
+            int ph = Physics.SphereCastNonAlloc(probeOrigin, 0.28f, fwd, noseHits, 1.75f, ~0, QueryTriggerInteraction.Ignore);
+            for (int i = 0; i < ph; i++)
+            {
+                var h = noseHits[i];
+                if (h.collider.transform.IsChildOf(transform) || h.collider.attachedRigidbody != null || Mathf.Abs(h.normal.y) >= 0.55f) continue;
+                if (h.collider.name.Contains("Asphalt") || h.collider.name.Contains("Kerb")) continue;
+                Vector3 wn = new Vector3(h.normal.x, 0f, h.normal.z);
+                if (wn.sqrMagnitude > 1e-4f)
+                {
+                    wn.Normalize();
+                    if (Vector3.Dot(fwd, wn) < -0.55f && (h.distance + 0.28f) <= 1.73f)
+                    {
+                        lastWallNormal = wn;
+                        wallContactTimer = 0.14f;
+                        break;
+                    }
+                }
+            }
+        }
+
         float dvDrop = Vector3.Dot(prevVelocity - vel, fwd);
-        if (dvDrop > wingBreakDeltaV && TripTime > 0.25f)
+        if (!lookaheadPreContact && dvDrop > wingBreakDeltaV && TripTime > 0.25f)
         {
             int nh = Physics.RaycastNonAlloc(transform.TransformPoint(0f, 0.42f, 1.0f), fwd, noseHits, 2.8f, ~0, QueryTriggerInteraction.Ignore);
             float bestDist = float.MaxValue;
@@ -378,14 +490,21 @@ public class F1Car : VehicleBase
             }
         }
 
-        // Steering: the assist narrows the lock at speed so keyboard input stays controllable
-        // Lateral grip available right now (tyres + downforce), used by the steering and stability assists
+        // Steering: progressive S-curve + speed-sensitive lock + natural counter-steer stability
         float wheelbase = frontAxleZ - rearAxleZ;
         float latGrip = frictionCoef * tyreGripScale * (9.81f + 0.5f * airDensity * vLong * vLong * downforceArea / mass) * 0.9f;
         // Assist: never ask for more steering angle than the tyres can use at this speed (no scrubbing, no snap)
         float usable = Mathf.Atan(wheelbase * latGrip / Mathf.Max(vLong * vLong, 1f)) * Mathf.Rad2Deg + 1.5f;
         float lockAngle = steeringAssist ? Mathf.Min(maxSteerAngle, usable) : maxSteerAngle;
-        float targetSteer = Mathf.Clamp(steerIn, -1f, 1f) * lockAngle;
+        float shapedSteer = externalInput ? Mathf.Clamp(steerIn, -1f, 1f) : Mathf.Sign(steerIn) * Mathf.Pow(Mathf.Abs(steerIn), 1.30f);
+        float targetSteer = shapedSteer * lockAngle;
+        if (steeringAssist && !externalInput && (wheels[2].grounded || wheels[3].grounded) && vLong > 10f)
+        {
+            float vLat = Vector3.Dot(vel, transform.right);
+            float bodySlipDeg = Mathf.Atan2(vLat, Mathf.Max(vLong, 8f)) * Mathf.Rad2Deg;
+            if (Mathf.Abs(bodySlipDeg) > 3.5f)
+                targetSteer = Mathf.Clamp(targetSteer + Mathf.Clamp(bodySlipDeg * 0.22f, -4f, 4f), -maxSteerAngle, maxSteerAngle);
+        }
         // Quick at low speed, calm at high speed; returns to centre faster than it turns in
         float rate = Mathf.Lerp(150f, 55f, Mathf.Clamp01(absV / 80f)) * (steeringAssist ? 1f : 1.4f);
         if (Mathf.Abs(targetSteer) < Mathf.Abs(steerAngle)) rate *= 1.8f;
@@ -450,7 +569,8 @@ public class F1Car : VehicleBase
             foreach (var w in new[] { l, r })
             {
                 if (!w.grounded) { w.load = 0f; continue; }
-                float damper = damperRate * (w.compression - w.prevCompression) / dt;
+                float compVel = (w.compression - w.prevCompression) / dt;
+                float damper = (compVel > 0f ? 5600f : 8600f) * compVel;
                 float f = springRate * w.compression + damper + (w == l ? roll : -roll);
                 w.load = Mathf.Clamp(f, 0f, mass * 9.81f * 4.5f);
                 rb.AddForceAtPosition(transform.up * w.load, w.hit.point);
@@ -480,6 +600,9 @@ public class F1Car : VehicleBase
             float vx = Vector3.Dot(pv, wFwd), vy = Vector3.Dot(pv, wRight);
 
             float mu = frictionCoef * tyreGripScale * tempGrip * Mathf.Clamp(1f - loadSensitivity * (w.load / nominalLoad - 1f), 0.75f, 1.25f);
+            // Dynamic trail-braking front bite (+10% under braking) and subtle low-gear rear load progression
+            if (w.front && brakeInput > 0.1f) mu *= 1f + 0.10f * Mathf.Clamp01(brakeInput);
+            if (!w.front && gear > 0 && gear <= 3 && driveInput > 0.6f) mu *= 0.96f;
             if (w.front && FrontWingLost) mu *= 0.9f;
             // Gravel trap: little grip and a lot of drag
             var surface = w.hit.collider.sharedMaterial;
@@ -509,7 +632,7 @@ public class F1Car : VehicleBase
                 float hold = -vx * cornerMass / dt;          // force that would stop the wheel this step
                 fx += Mathf.Clamp(hold, -wheelBrake, wheelBrake);
             }
-            fx -= vx * (gravel ? 380f : OnGrass ? 70f : 12f);                 // rolling resistance (gravel digs in)
+            fx -= vx * (gravel ? 380f : OnGrass ? 70f : 4.5f);                // realistic rolling resistance (gravel/grass dig in)
 
             // Friction circle: assists keep the tyre at the limit, without them it locks or spins and loses side grip
             float latUse = Mathf.Abs(fy) / Mathf.Max(maxF, 1f);
@@ -545,28 +668,38 @@ public class F1Car : VehicleBase
         {
             Vector3 vWall = rb.linearVelocity;
             float vInto = Vector3.Dot(vWall, lastWallNormal);
-            if (vInto < 0f) vWall -= lastWallNormal * vInto;
+            if (vInto < 0.6f && !reverse) vWall -= lastWallNormal * vInto;
             vWall.y = Mathf.Min(vWall.y, 0.01f);
             rb.linearVelocity = vWall;
         }
 
         TyreSlip = OnGravel ? 0f : Mathf.Max(slipMax - 0.6f, (WheelLocking || WheelSpinning) && absV > 5f ? 1f : 0f);
 
-        // Stability assist: if the car rotates faster than the steering asks for (oversteer), gently stop the slide
+        // Stability assist: smooth progressive yaw damping + natural oversteer catch (no robotic snapping)
         if (steeringAssist && anyGrounded && absV > 8f)
         {
             float desiredYaw = Mathf.Clamp(vLong * Mathf.Tan(steerAngle * Mathf.Deg2Rad) / wheelbase, -latGrip / absV, latGrip / absV);
             float actualYaw = Vector3.Dot(rb.angularVelocity, transform.up);
             float err = actualYaw - desiredYaw;
             if (Mathf.Abs(actualYaw) > Mathf.Abs(desiredYaw) + 0.03f && Mathf.Sign(err) == Mathf.Sign(actualYaw))
-                rb.AddTorque(-transform.up * err * rb.inertiaTensor.y * 6f);
+                rb.AddTorque(-transform.up * err * rb.inertiaTensor.y * 5.2f);
+            if (Mathf.Abs(steerIn) < 0.08f)
+                rb.AddTorque(-transform.up * actualYaw * rb.inertiaTensor.y * (0.45f * Mathf.Clamp01(absV / 60f)));
         }
 
-        // After a hit: keep F1 car planted with zero upward launch or elastic bounce (uses TripTime so works in EditMode too)
-        if (TripTime - lastImpactLogTime < 0.8f && anyGrounded)
+        // After a hit: keep F1 car planted with zero upward launch, elastic bounce, or residual creep (works in EditMode too)
+        if (TripTime - lastImpactLogTime < 1.2f && anyGrounded)
         {
             Vector3 v = rb.linearVelocity;
-            if (v.y > 0.02f) { v.y = 0.02f; rb.linearVelocity = v; }
+            bool changed = false;
+            if (v.y > 0.02f) { v.y = 0.02f; changed = true; }
+            if (throttle < 0.05f && brake < 0.05f && (v.x * v.x + v.z * v.z) < 1.0f)
+            {
+                v.x *= 0.80f;
+                v.z *= 0.80f;
+                changed = true;
+            }
+            if (changed) rb.linearVelocity = v;
             Vector3 local = transform.InverseTransformDirection(rb.angularVelocity);
             local.x *= 0.35f;
             local.z *= 0.35f;
@@ -674,7 +807,7 @@ public class F1Car : VehicleBase
             }
         }
         if (steeringWheelPivot != null)
-            steeringWheelPivot.localRotation = steeringWheelBaseRot * Quaternion.AngleAxis(-steerAngle * 5f, steeringAxisLocal);
+            steeringWheelPivot.localRotation = steeringWheelBaseRot * Quaternion.AngleAxis(Mathf.Clamp(-steerAngle * 2.1f, -58f, 58f), steeringAxisLocal);
         if (drsFlapPivot != null)
         {
             drsVisualAngle = Mathf.MoveTowards(drsVisualAngle, DrsOpen ? -28f : 0f, 220f * dt);
@@ -756,26 +889,53 @@ public class F1Car : VehicleBase
         float vIn = Vector3.Dot(v, n);
         float closing = vIn < 0f ? -vIn : 0f;
         float relNormal = Mathf.Abs(Vector3.Dot(c.relativeVelocity, n));
-        if (vIn < 0f)
+        float impactMag = Mathf.Max(closing, relNormal);
+        Vector3 lever = hitPoint - rb.worldCenterOfMass;
+        lever.y = 0f;
+
+        if (vIn < 2.5f)
         {
             Vector3 vHoriz = new Vector3(v.x, 0f, v.z);
             Vector3 vTan = vHoriz - n * vIn;
-            vTan *= Mathf.Lerp(0.96f, 0.82f, Mathf.Clamp01(closing / 25f));
-            Vector3 newV = vTan + n * (closing * 0.01f);
-            newV.y = Mathf.Min(v.y, 0.01f);
+            bool playModePhysics = Physics.simulationMode != SimulationMode.Script;
+            float rebound = playModePhysics && closing > 3.5f ? Mathf.Min(closing * 0.14f, 1.6f) : 0f;
+            vTan *= playModePhysics ? Mathf.Lerp(0.95f, 0.68f, Mathf.Clamp01(impactMag / 32f))
+                                    : Mathf.Lerp(0.96f, 0.82f, Mathf.Clamp01(impactMag / 25f));
+            Vector3 newV = vTan + n * rebound;
+            newV.y = Mathf.Min(v.y, 0.02f);
             rb.linearVelocity = newV;
         }
-        else if (v.y > 0.01f)
+        else if (v.y > 0.02f)
         {
-            v.y = 0.01f;
+            v.y = 0.02f;
             rb.linearVelocity = v;
         }
 
         Vector3 localAng = transform.InverseTransformDirection(rb.angularVelocity);
         localAng.x *= 0.15f;
         localAng.z *= 0.15f;
-        localAng.y = Mathf.Clamp(localAng.y, -2.0f, 2.0f);
+        if (Physics.simulationMode != SimulationMode.Script && impactMag > 2.5f)
+        {
+            float yawImpulse = Mathf.Clamp(Vector3.Cross(lever, n).y * impactMag * 0.22f, -3.2f, 3.2f);
+            localAng.y = Mathf.Clamp(localAng.y + yawImpulse, -3.5f, 3.5f);
+        }
+        else
+        {
+            localAng.y = Mathf.Clamp(localAng.y, -2.0f, 2.0f);
+        }
         rb.angularVelocity = transform.TransformDirection(localAng);
+
+        if (impactMag > 4f)
+        {
+            Wheel closestW = null;
+            float bestWd = float.MaxValue;
+            foreach (var w in wheels)
+            {
+                float d = (transform.TransformPoint(w.attach) - hitPoint).sqrMagnitude;
+                if (d < bestWd) { bestWd = d; closestW = w; }
+            }
+            if (closestW != null) closestW.compression = Mathf.Max(closestW.compression, restLength * 0.80f);
+        }
 
         dvOut = Mathf.Max(dvImp, closing, relNormal);
         return true;

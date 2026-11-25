@@ -73,6 +73,8 @@ public class RaceManager : MonoBehaviour
     public float BoxDistance(int team) => boxDistances[Mathf.Clamp(team, 0, boxDistances.Length - 1)];
     public float BoxLat(int team) => boxOffsets != null && boxOffsets.Length > 0 ? boxOffsets[Mathf.Clamp(team, 0, boxOffsets.Length - 1)] : PitLat(BoxDistance(team));
     public bool PlayerInPit => pitPhase != PitPhase.None;
+    public static bool PitServiceActive { get; private set; }
+    public static float PitCameraSide { get; private set; } = -1f;
     public string PitDebugState => $"{pitPhase} s={pitS:0.0} lat={pitLat:0.0}";
     public static bool InWindow(float d, float a, float b, float length) => Mathf.Repeat(d - a, length) <= Mathf.Repeat(b - a, length);
 
@@ -212,7 +214,8 @@ public class RaceManager : MonoBehaviour
         int i = standings.IndexOf(playerRacer);
         if (i <= 0) return "you're leading";
         var ahead = standings[i - 1];
-        float gap = (ahead.progress - playerRacer.progress) / Mathf.Max(player.Speed, 20f);
+        float refSpeed = Mathf.Clamp(track.length / 76f, 44f, 68f);
+        float gap = Mathf.Max(0f, ahead.progress - playerRacer.progress) / refSpeed;
         return "gap to " + ahead.code + " is " + gap.ToString("0.0") + " seconds";
     }
 
@@ -239,7 +242,7 @@ public class RaceManager : MonoBehaviour
             if (!stopWarned && MandatoryStop && CompoundsUsedCount() < 2 && laps - lap <= 2 && laps >= 4)
             { stopWarned = true; Radio("We still need a pit stop for the second compound. Box, box!", true); }
             if (player is F1Car f1 && f1.OnGravel && Time.time - lastGravelMsg > 15f) { lastGravelMsg = Time.time; Radio("Off track. Rejoin safely and watch the limits."); }
-            if (Time.time - incidentTime < 2f && Time.time - lastYellowMsg > 12f && InWindow(prevD, incidentD - 300f, incidentD + 20f, track.length))
+            if (Time.time - incidentTime < 2f && Time.time - lastYellowMsg > 35f && InWindow(prevD, incidentD - 260f, incidentD - 15f, track.length))
             { lastYellowMsg = Time.time; Radio("Yellow flag ahead, careful. No overtaking."); }
         }
         if (!lastLapSaid && crossings == laps && laps > 1) { lastLapSaid = true; Radio("Last lap! Bring it home.", true); }
@@ -267,23 +270,50 @@ public class RaceManager : MonoBehaviour
         GUI.Label(new Rect(p.x + 70 * s, p.y + 28 * s, p.width - 80 * s, 34 * s), "\"" + radioText + "\"", body);
     }
 
-    // F1-style name plates above the cars near you: position, team colour, driver code
+    readonly List<(Racer r, Vector3 sp, float dist)> visibleTags = new List<(Racer, Vector3, float)>();
+    readonly List<Rect> placedTagRects = new List<Rect>();
+
+    // F1-style name plates above nearby visible cars: occluded by buildings/walls, distance faded, overlap culled
     void DrawNameTags(float s, List<Racer> standings)
     {
         if (useSession && !GameSession.Settings.nameTags) return;
         var cam = Camera.main;
         if (cam == null) return;
+        visibleTags.Clear();
+        placedTagRects.Clear();
+        Vector3 camPos = cam.transform.position;
         foreach (var r in racers)
         {
             if (r.isPlayer || !r.ai.gameObject.activeSelf) continue;
-            Vector3 world = r.tr.position + Vector3.up * 1.6f;
-            float dist = Vector3.Distance(cam.transform.position, world);
-            if (dist > 90f) continue;
+            Vector3 world = r.tr.position + Vector3.up * 1.5f;
+            float dist = Vector3.Distance(camPos, world);
+            if (dist > 55f) continue;
             Vector3 sp = cam.WorldToScreenPoint(world);
             if (sp.z <= 0f) continue;
-            float k = Mathf.Lerp(1.1f, 0.7f, dist / 90f) * s;
+            if (Physics.Linecast(camPos, world, out RaycastHit hit, ~0, QueryTriggerInteraction.Ignore))
+                if (hit.collider != null && hit.collider.attachedRigidbody == null && !hit.collider.transform.IsChildOf(r.tr))
+                    continue;
+            visibleTags.Add((r, sp, dist));
+        }
+        visibleTags.Sort((a, b) => a.dist.CompareTo(b.dist));
+        int drawn = 0;
+        for (int idx = 0; idx < visibleTags.Count && drawn < 6; idx++)
+        {
+            var (r, sp, dist) = visibleTags[idx];
+            float alpha = Mathf.InverseLerp(55f, 35f, dist);
+            if (alpha <= 0.02f) continue;
+            float k = Mathf.Lerp(1.05f, 0.72f, dist / 55f) * s;
             float w = 96 * k, h = 24 * k;
             Rect p = new Rect(sp.x - w / 2f, Screen.height - sp.y - h, w, h);
+            bool overlaps = false;
+            foreach (var prev in placedTagRects)
+                if (p.Overlaps(prev)) { overlaps = true; break; }
+            if (overlaps) continue;
+            placedTagRects.Add(p);
+            drawn++;
+
+            Color savedCol = GUI.color;
+            GUI.color = new Color(1f, 1f, 1f, alpha);
             Fill(p, new Color(0.03f, 0.04f, 0.07f, 0.8f), 4 * k);
             Fill(new Rect(p.x, p.y, 26 * k, h), new Color(1f, 1f, 1f, 0.95f), 4 * k);
             int fs = Mathf.RoundToInt(13 * k);
@@ -292,6 +322,7 @@ public class RaceManager : MonoBehaviour
             Fill(new Rect(p.x + 28 * k, p.y + 4 * k, 4 * k, h - 8 * k), r.color);
             tagCode.fontSize = fs;
             GUI.Label(new Rect(p.x + 36 * k, p.y, w - 36 * k, h), r.code, tagCode);
+            GUI.color = savedCol;
         }
     }
 
@@ -586,17 +617,20 @@ public class RaceManager : MonoBehaviour
                 if (choosing && kb.digit3Key.wasPressedThisFrame) playerNext = Compound.Hard;
             }
 #endif
-            // Incidents: a hard hit brings out yellow flags at the marshal posts before it
-            if (player.LastImpactTime > lastIncidentSeen + 0.5f && player.LastImpactStrength > 8f)
+            // Incidents: only major impacts trigger yellow flags, with a cooldown to prevent spam
+            if (player.LastImpactTime > lastIncidentSeen + 0.5f && player.LastImpactStrength > 15f)
             {
                 lastIncidentSeen = player.LastImpactTime;
-                incidentD = prevD;
-                incidentTime = Time.time;
+                if (Time.time - incidentTime > 12f)
+                {
+                    incidentD = prevD;
+                    incidentTime = Time.time;
+                }
             }
-            bool active = Time.time - incidentTime < 10f;
+            bool active = Time.time - incidentTime < 5.5f;
             if (marshalPosts != null)
                 foreach (var post in marshalPosts)
-                    if (post != null) post.SetYellow(active && InWindow(post.trackDistance, incidentD - 280f, incidentD + 20f, track.length));
+                    if (post != null) post.SetYellow(active && InWindow(post.trackDistance, incidentD - 260f, incidentD - 15f, track.length));
         }
 
         goBannerTimer -= Time.deltaTime;
@@ -877,6 +911,8 @@ public class RaceManager : MonoBehaviour
 
     public void StepTestPitFixed(float dt) => UpdatePlayerPit(dt);
 
+    void OnDisable() { PitServiceActive = false; }
+
     void StartPlayerPit(float lateral)
     {
         if (pitBoxes != null && playerRacer.team < pitBoxes.Length && pitBoxes[playerRacer.team] != null)
@@ -894,17 +930,35 @@ public class RaceManager : MonoBehaviour
         pitLat = lateral;
         pitLatVel = 0f;
         pitJackBlend = 0f;
-        pitHeading = player.transform.rotation;
-        pitV = Mathf.Max(player.Speed, 6f);
+        Vector3 tan = track.TangentAt(pitS); tan.y = 0f;
+        Quaternion trackRot = tan.sqrMagnitude > 1e-4f ? Quaternion.LookRotation(tan.normalized, Vector3.up) : player.transform.rotation;
+        pitHeading = Quaternion.Slerp(player.transform.rotation, trackRot, 0.35f);
+        pitV = Mathf.Clamp(player.Speed, 6f, pitSpeed * 1.15f);
+        PitCameraSide = -garageSide;
+        PitServiceActive = false;
         pitRequested = false;
         tyresSwapped = false;
         pitNeedWingRepair = (player is F1Car f1c) && f1c.FrontWingLost;
         pitWingRepaired = false;
     }
 
+    static readonly Collider[] pitWallHits = new Collider[8];
+    static readonly float[] pitNudgeSteps = { 0.25f, -0.25f, 0.50f, -0.50f, 0.85f, -0.85f, 1.25f, -1.25f, 1.75f, -1.75f };
+
+    bool PitPosHitsBarrier(float sDist, float lat, float radius)
+    {
+        Vector3 probe = track.PointAt(sDist) + track.RightAt(sDist) * lat;
+        float gyProbe = snapToGround && GroundAt(probe, out float yp) ? yp : probe.y;
+        probe.y = gyProbe + 0.65f;
+        int wc = Physics.OverlapSphereNonAlloc(probe, radius, pitWallHits, ~0, QueryTriggerInteraction.Ignore);
+        for (int k = 0; k < wc; k++)
+            if (pitWallHits[k].name.StartsWith("Barrier")) return true;
+        return false;
+    }
+
     void UpdatePlayerPit(float dt)
     {
-        if (pitPhase == PitPhase.None || dt <= 1e-5f) return;
+        if (pitPhase == PitPhase.None || dt <= 1e-5f) { PitServiceActive = false; return; }
         float L = track.length;
         int pTeam = playerRacer.team;
         var box = pitBoxes != null && pTeam < pitBoxes.Length ? pitBoxes[pTeam] : null;
@@ -915,7 +969,7 @@ public class RaceManager : MonoBehaviour
         if (toBox > L * 0.5f) toBox = 0f;
 
         float targetLat = fastLat;
-        float maxLatSpeed = pitProfile != null && pitProfile.Length > 1 ? 8f : 4.5f;
+        float maxLatSpeed = pitPhase == PitPhase.Approach ? 5.2f : (pitProfile != null && pitProfile.Length > 1 ? 6.5f : 4.5f);
 
         switch (pitPhase)
         {
@@ -999,7 +1053,9 @@ public class RaceManager : MonoBehaviour
             case PitPhase.Release:
             {
                 targetLat = fastLat;
-                pitV = Mathf.MoveTowards(pitV, pitSpeed, 10f * dt);
+                float exitLineD = Mathf.Max(pitExitEnd - 12f, pitExitStart);
+                bool pastLine = !InWindow(pitS, pitEntryStart, exitLineD, L) && InWindow(pitS, exitLineD, pitExitEnd + 80f, L);
+                pitV = Mathf.MoveTowards(pitV, pastLine ? 31f : pitSpeed, (pastLine ? 12f : 10f) * dt);
                 // Strictly remain on the pit fast lane until AFTER pitExitEnd before merging out
                 if (!InWindow(pitS, pitEntryStart, pitExitEnd, L) && InWindow(pitS, pitExitEnd, pitExitEnd + 100f, L))
                 {
@@ -1012,13 +1068,18 @@ public class RaceManager : MonoBehaviour
             case PitPhase.Exit:
             {
                 float afterExit = Mathf.Repeat(pitS - pitExitEnd, L);
-                float mergeT = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(afterExit / 42f));
-                float trackBlendLat = Mathf.Clamp(PitSide * (track.HalfWidthAt(pitS) - 2.6f), -3.5f, 3.5f);
+                float mergeT = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(afterExit / 26f));
+                float hw = track.HalfWidthAt(pitS);
+                float trackBlendLat = Mathf.Clamp(track.RacingLineOffsetAt(pitS), -(hw - 2.1f), hw - 2.1f);
                 targetLat = Mathf.Lerp(pitExitStartLat, trackBlendLat, mergeT);
-                pitV = Mathf.MoveTowards(pitV, 32f, 11f * dt);
-                if (afterExit >= 50f || (afterExit >= 25f && Mathf.Abs(pitLat - trackBlendLat) < 0.25f))
+                pitV = Mathf.MoveTowards(pitV, 36f, 13f * dt);
+                float handoffDist = Application.isPlaying ? 18f : 26f;
+                if (afterExit >= 38f || (afterExit >= handoffDist && Mathf.Abs(pitLat - trackBlendLat) < 0.35f))
                 {
-                    Vector3 handoffFwd = (track.TangentAt(pitS) * Mathf.Max(pitV, 1f) + track.RightAt(pitS) * pitLatVel).normalized;
+                    Vector3 tanDir = track.TangentAt(pitS); tanDir.y = 0f; tanDir.Normalize();
+                    Vector3 rawFwd = (tanDir * Mathf.Max(pitV, 1f) + track.RightAt(pitS) * pitLatVel); rawFwd.y = 0f; rawFwd.Normalize();
+                    float dev = Vector3.Angle(tanDir, rawFwd);
+                    Vector3 handoffFwd = dev > 6f ? Vector3.Slerp(tanDir, rawFwd, 6f / dev).normalized : rawFwd;
                     Quaternion handoffRot = Quaternion.LookRotation(handoffFwd, Vector3.up);
                     if (player is F1Car pf1) pf1.OnPitExitHandoff(handoffFwd * pitV, handoffRot);
                     else
@@ -1030,6 +1091,7 @@ public class RaceManager : MonoBehaviour
                     }
                     player.inputEnabled = !playerRacer.finished;
                     pitPhase = PitPhase.None;
+                    PitServiceActive = false;
                     Radio("Good stop! " + Tyres.Names[(int)playerCompound] + (pitNeedWingRepair ? " tyres + fresh wing on." : " tyres on.") + " Push now.", true);
                     return;
                 }
@@ -1037,11 +1099,38 @@ public class RaceManager : MonoBehaviour
             }
         }
 
+        PitCameraSide = -garageSide;
+        PitServiceActive = pitPhase == PitPhase.Stopping || pitPhase == PitPhase.Service || (pitPhase == PitPhase.BoxExit && Mathf.Repeat(pitS - boxD, L) < 6f);
+
         if (pitPhase != PitPhase.Service)
         {
             float desiredLatVel = Mathf.Clamp((targetLat - pitLat) / Mathf.Max(dt, 1e-4f), -maxLatSpeed, maxLatSpeed);
             pitLatVel = Mathf.Lerp(pitLatVel, desiredLatVel, 1f - Mathf.Exp(-14f * dt));
-            pitLat += pitLatVel * dt;
+            float nextS = pitS + pitV * dt;
+            float nextLat = pitLat + pitLatVel * dt;
+
+            // Real-time non-convex-safe barrier shield in pit corridor: probe offsets without Collider.ClosestPoint
+            if (PitPosHitsBarrier(nextS, nextLat, 1.0f))
+            {
+                float centerDir = -Mathf.Sign(Mathf.Abs(nextLat) > 0.1f ? nextLat : 1f);
+                bool resolved = false;
+                foreach (float rad in new[] { 1.0f, 0.90f })
+                {
+                    foreach (float dAbs in pitNudgeSteps)
+                    {
+                        float cand = nextLat + (dAbs > 0f ? Mathf.Abs(dAbs) * centerDir : -Mathf.Abs(dAbs) * centerDir);
+                        if (!PitPosHitsBarrier(nextS, cand, rad))
+                        {
+                            nextLat = cand;
+                            pitLatVel = 0f;
+                            resolved = true;
+                            break;
+                        }
+                    }
+                    if (resolved) break;
+                }
+            }
+            pitLat = nextLat;
         }
         else
         {
@@ -1056,7 +1145,7 @@ public class RaceManager : MonoBehaviour
         if (snapToGround && GroundAt(pos, out float gy))
             pos.y = Mathf.Lerp(body0Y < -1e5f ? gy : body0Y, gy, 0.45f);
         body0Y = pos.y;
-        pos += Vector3.up * (0.04f + 0.08f * Mathf.SmoothStep(0f, 1f, pitJackBlend));
+        pos += Vector3.up * (0.04f + 0.16f * Mathf.SmoothStep(0f, 1f, pitJackBlend));
 
         Vector3 headingDir = track.TangentAt(pitS) * Mathf.Max(pitV, 3f) + track.RightAt(pitS) * pitLatVel;
         headingDir.y = 0f;
@@ -1219,7 +1308,8 @@ public class RaceManager : MonoBehaviour
         }
         float diff = leader.progress - r.progress;
         if (diff >= track.length) { int n = Mathf.FloorToInt(diff / track.length); return "+" + n + (n == 1 ? " LAP" : " LAPS"); }
-        return "+" + (diff / Mathf.Max(r.speed, 25f)).ToString("0.000");
+        float refSpeed = Mathf.Clamp(track.length / 76f, 44f, 68f);
+        return "+" + (diff / refSpeed).ToString("0.000");
     }
 
     // ---------- HUD ----------
@@ -1279,7 +1369,7 @@ public class RaceManager : MonoBehaviour
     void OnGUI()
     {
         if (playerRacer == null) return;
-        float s = Screen.height / 1080f;
+        float s = Mathf.Min(Screen.height / 1080f, Screen.width / 1920f);
         if (!Mathf.Approximately(s, styleScale)) BuildGuiStyles(s);
         var standings = Standings();
 
@@ -1335,7 +1425,7 @@ public class RaceManager : MonoBehaviour
 
     void DrawTopPanel(float s, List<Racer> standings)
     {
-        Rect p = new Rect(Screen.width / 2f - 280 * s, 16 * s, 560 * s, 124 * s);
+        Rect p = new Rect(Screen.width / 2f - 280 * s, 20 * s, 560 * s, 124 * s);
         Fill(p, new Color(0.05f, 0.06f, 0.09f, 0.78f), 14 * s);
         int lap = Mathf.Clamp(crossings, 1, laps);
         int pos = standings.IndexOf(playerRacer) + 1;
@@ -1387,7 +1477,7 @@ public class RaceManager : MonoBehaviour
     void DrawTower(float s, List<Racer> standings)
     {
         float rowH = 21 * s, w = 210 * s;
-        Rect p = new Rect(16 * s, 232 * s, w, 34 * s + rowH * standings.Count);
+        Rect p = new Rect(24 * s, 232 * s, w, 34 * s + rowH * standings.Count);
         Fill(p, new Color(0.04f, 0.05f, 0.08f, 0.8f), 10 * s);
         GUI.Label(new Rect(p.x + 12 * s, p.y + 4 * s, w, 24 * s), "LAP " + Mathf.Clamp(winner != null ? laps : LapOf(standings[0]), 1, laps) + " / " + laps, towerHead);
         Racer leader = standings[0];
@@ -1428,7 +1518,7 @@ public class RaceManager : MonoBehaviour
     void DrawMinimap(float s, List<Racer> standings)
     {
         float w = 280 * s, h = 300 * s;
-        Rect panel = new Rect(Screen.width - w - 16 * s, 16 * s, w, h);
+        Rect panel = new Rect(Screen.width - w - 24 * s, 20 * s, w, h);
         Fill(panel, new Color(0.04f, 0.05f, 0.08f, 0.82f), 16 * s);
         Fill(panel, new Color(1f, 1f, 1f, 0.12f), 16 * s, 1.5f * s);
 
@@ -1518,7 +1608,7 @@ public class RaceManager : MonoBehaviour
     // Tyre panel (compound, wear, stop requirement) and pit lane / flag messages
     void DrawTyresAndPit(float s)
     {
-        Rect p = new Rect(330 * s, Screen.height - 132 * s, 250 * s, 108 * s);
+        Rect p = new Rect(330 * s, Screen.height - 134 * s, 250 * s, 110 * s);
         Fill(p, new Color(0.05f, 0.06f, 0.09f, 0.78f), 12 * s);
         float d = 52 * s;
         Rect circle = new Rect(p.x + 14 * s, p.y + 14 * s, d, d);
@@ -1550,28 +1640,40 @@ public class RaceManager : MonoBehaviour
 
         if (pitPhase != PitPhase.None)
         {
-            Rect b = new Rect(Screen.width / 2f - 300 * s, Screen.height - 190 * s, 600 * s, 110 * s);
-            Fill(b, new Color(0.03f, 0.04f, 0.07f, 0.88f), 14 * s);
-            string head = pitPhase == PitPhase.Service ? "PIT STOP  " + pitTimer.ToString("0.0") + " s"
-                        : pitPhase == PitPhase.Exit || pitPhase == PitPhase.Release ? "RELEASED - PIT EXIT" : "PIT LANE  ·  LIMITER 80 km/h";
-            midCenter.normal.textColor = pitPhase == PitPhase.Service ? new Color(1f, 0.35f, 0.3f) : new Color(0.4f, 1f, 0.5f);
-            GUI.Label(new Rect(b.x, b.y + 8 * s, b.width, 30 * s), head, midCenter);
-            bool choosing = pitPhase == PitPhase.Approach || pitPhase == PitPhase.BoxEntry || pitPhase == PitPhase.Stopping;
-            GUI.Label(new Rect(b.x, b.y + 38 * s, b.width, 22 * s), choosing ? "Choose new tyres:" : "Fitted:", small);
-            for (int k = 0; k < 3; k++)
+            bool showSelector = pitPhase == PitPhase.Approach || pitPhase == PitPhase.BoxEntry || pitPhase == PitPhase.Stopping || (pitPhase == PitPhase.Service && !tyresSwapped);
+            if (showSelector)
             {
-                Compound c = (Compound)k;
-                Compound shown = pitPhase == PitPhase.Service || pitPhase == PitPhase.Release || pitPhase == PitPhase.Exit ? (tyresSwapped || pitPhase != PitPhase.Service ? playerCompound : playerNext) : playerNext;
-                bool sel = c == shown;
-                Rect r = new Rect(b.x + 60 * s + k * 165 * s, b.y + 62 * s, 150 * s, 36 * s);
-                Fill(r, sel ? Tyres.Colors[k] : new Color(1, 1, 1, 0.08f), 8 * s);
-                pitChoiceStyle.normal.textColor = sel ? Color.black : Color.white;
-                GUI.Label(r, (k + 1) + "  " + Tyres.Names[k].ToUpperInvariant(), pitChoiceStyle);
+                Rect b = new Rect(Screen.width / 2f - 300 * s, Screen.height - 190 * s, 600 * s, 110 * s);
+                Fill(b, new Color(0.03f, 0.04f, 0.07f, 0.88f), 14 * s);
+                string head = pitPhase == PitPhase.Service ? "PIT STOP  " + pitTimer.ToString("0.0") + " s" : "PIT LANE  ·  LIMITER 80 km/h";
+                midCenter.normal.textColor = pitPhase == PitPhase.Service ? new Color(1f, 0.35f, 0.3f) : new Color(0.4f, 1f, 0.5f);
+                GUI.Label(new Rect(b.x, b.y + 8 * s, b.width, 30 * s), head, midCenter);
+                GUI.Label(new Rect(b.x, b.y + 38 * s, b.width, 22 * s), "Choose new tyres:", small);
+                for (int k = 0; k < 3; k++)
+                {
+                    Compound c = (Compound)k;
+                    bool sel = c == playerNext;
+                    Rect r = new Rect(b.x + 60 * s + k * 165 * s, b.y + 62 * s, 150 * s, 36 * s);
+                    Fill(r, sel ? Tyres.Colors[k] : new Color(1, 1, 1, 0.08f), 8 * s);
+                    pitChoiceStyle.normal.textColor = sel ? Color.black : Color.white;
+                    GUI.Label(r, (k + 1) + "  " + Tyres.Names[k].ToUpperInvariant(), pitChoiceStyle);
+                }
+            }
+            else
+            {
+                Rect b = new Rect(Screen.width / 2f - 240 * s, Screen.height - 120 * s, 480 * s, 44 * s);
+                Fill(b, new Color(0.03f, 0.04f, 0.07f, 0.88f), 12 * s);
+                Fill(new Rect(b.x + 12 * s, b.y + 10 * s, 10 * s, 24 * s), Tyres.Colors[(int)playerCompound], 4 * s);
+                string msg = pitPhase == PitPhase.Service
+                    ? "PIT STOP " + pitTimer.ToString("0.0") + " s  ·  FITTED: " + Tyres.Names[(int)playerCompound].ToUpperInvariant()
+                    : "RELEASED - PIT EXIT  ·  " + Tyres.Names[(int)playerCompound].ToUpperInvariant();
+                midCenter.normal.textColor = pitPhase == PitPhase.Service ? new Color(1f, 0.45f, 0.3f) : new Color(0.4f, 1f, 0.5f);
+                GUI.Label(new Rect(b.x + 18 * s, b.y, b.width - 18 * s, b.height), msg, midCenter);
             }
         }
 
-        // Yellow flag in the section ahead of the player
-        if (Time.time - incidentTime < 10f && InWindow(prevD, incidentD - 300f, incidentD + 20f, track.length))
+        // Yellow flag in the section genuinely ahead of the player
+        if (Time.time - incidentTime < 5.5f && InWindow(prevD, incidentD - 260f, incidentD - 15f, track.length))
         {
             Rect y = new Rect(Screen.width / 2f - 160 * s, 184 * s, 320 * s, 34 * s);
             Fill(y, new Color(1f, 0.85f, 0.1f, 0.95f), 6 * s);

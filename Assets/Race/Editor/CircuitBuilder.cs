@@ -80,6 +80,7 @@ public static class CircuitBuilder
         if (Application.isBatchMode && passed < GameSession.Tracks.Length)
             Debug.LogError($"Batch build verification failed: {passed}/{GameSession.Tracks.Length} circuits passed");
 
+        VerifyBarrierContainment();
         PitLaneVerifyTest();
         RenderUnityVerificationScreenshots();
 
@@ -238,7 +239,7 @@ public static class CircuitBuilder
 
     static void BuildCarDetailMaterials(Shader lit, string texDir, Texture2D normal)
     {
-        // 1. Steering Wheel Body + Gloves
+        // 1. Steering Wheel Body + Gloves (with dedicated height-derived NormalMap)
         string swTexPath = texDir + "/shared/T_SteeringWheel_Body_BaseColor.png";
         var swTi = AssetImporter.GetAtPath(swTexPath) as TextureImporter;
         if (swTi != null && (!swTi.sRGBTexture || swTi.maxTextureSize < 2048))
@@ -247,20 +248,64 @@ public static class CircuitBuilder
             swTi.maxTextureSize = 2048;
             swTi.SaveAndReimport();
         }
+        string swNormPath = texDir + "/shared/T_SteeringWheel_Body_Normal.png";
+        var swNormTi = AssetImporter.GetAtPath(swNormPath) as TextureImporter;
+        if (swNormTi != null && (swNormTi.textureType != TextureImporterType.NormalMap || swNormTi.maxTextureSize < 2048))
+        {
+            swNormTi.textureType = TextureImporterType.NormalMap;
+            swNormTi.sRGBTexture = false;
+            swNormTi.maxTextureSize = 2048;
+            swNormTi.SaveAndReimport();
+        }
         var swBase = LoadTex(swTexPath);
+        var swNorm = LoadTex(swNormPath) ?? normal;
         string swMatPath = $"{LiveryDir}/SteeringWheel_Body.mat";
         var swMat = AssetDatabase.LoadAssetAtPath<Material>(swMatPath);
         if (swMat == null) { swMat = new Material(lit); AssetDatabase.CreateAsset(swMat, swMatPath); }
         swMat.shader = lit;
         if (swBase != null) swMat.SetTexture("_BaseMap", swBase);
         swMat.SetColor("_BaseColor", Color.white);
-        swMat.SetFloat("_Metallic", 0.15f);
-        swMat.SetFloat("_Smoothness", 0.52f);
-        if (normal != null) { swMat.SetTexture("_BumpMap", normal); swMat.SetFloat("_BumpScale", 0.7f); swMat.EnableKeyword("_NORMALMAP"); }
+        swMat.SetFloat("_Metallic", 0.14f);
+        swMat.SetFloat("_Smoothness", 0.44f);
+        if (swNorm != null) { swMat.SetTexture("_BumpMap", swNorm); swMat.SetFloat("_BumpScale", 0.85f); swMat.EnableKeyword("_NORMALMAP"); }
         swMat.SetTexture("_OcclusionMap", null);
         swMat.SetFloat("_OcclusionStrength", 0f);
         swMat.DisableKeyword("_OCCLUSIONMAP");
         EditorUtility.SetDirty(swMat);
+
+        // 1b. Sealed Monocoque Carbon Tub & Steered Front Wake Deflectors
+        string carbBasePath = texDir + "/shared/T_Cockpit_Carbon_BaseColor.png";
+        var cbTi = AssetImporter.GetAtPath(carbBasePath) as TextureImporter;
+        if (cbTi != null && (!cbTi.sRGBTexture || cbTi.maxTextureSize < 1024))
+        {
+            cbTi.sRGBTexture = true;
+            cbTi.maxTextureSize = 1024;
+            cbTi.SaveAndReimport();
+        }
+        string carbNormPath = texDir + "/shared/T_Cockpit_Carbon_Normal.png";
+        var cnTi = AssetImporter.GetAtPath(carbNormPath) as TextureImporter;
+        if (cnTi != null && (cnTi.textureType != TextureImporterType.NormalMap || cnTi.maxTextureSize < 1024))
+        {
+            cnTi.textureType = TextureImporterType.NormalMap;
+            cnTi.sRGBTexture = false;
+            cnTi.maxTextureSize = 1024;
+            cnTi.SaveAndReimport();
+        }
+        var carbBase = LoadTex(carbBasePath);
+        var carbNorm = LoadTex(carbNormPath) ?? normal;
+        string carbMatPath = $"{LiveryDir}/Cockpit_Carbon.mat";
+        var carbMat = AssetDatabase.LoadAssetAtPath<Material>(carbMatPath);
+        if (carbMat == null) { carbMat = new Material(lit); AssetDatabase.CreateAsset(carbMat, carbMatPath); }
+        carbMat.shader = lit;
+        if (carbBase != null) carbMat.SetTexture("_BaseMap", carbBase);
+        carbMat.SetColor("_BaseColor", Color.white);
+        carbMat.SetFloat("_Metallic", 0.18f);
+        carbMat.SetFloat("_Smoothness", 0.56f);
+        if (carbNorm != null) { carbMat.SetTexture("_BumpMap", carbNorm); carbMat.SetFloat("_BumpScale", 0.75f); carbMat.EnableKeyword("_NORMALMAP"); }
+        carbMat.SetTexture("_OcclusionMap", null);
+        carbMat.SetFloat("_OcclusionStrength", 0f);
+        carbMat.DisableKeyword("_OCCLUSIONMAP");
+        EditorUtility.SetDirty(carbMat);
 
         // 2. Steering Wheel Unlit OLED Screen
         var unlit = Shader.Find("Universal Render Pipeline/Unlit") ?? Shader.Find("Unlit/Texture");
@@ -277,9 +322,9 @@ public static class CircuitBuilder
         var mirMat = AssetDatabase.LoadAssetAtPath<Material>(mirPath);
         if (mirMat == null) { mirMat = new Material(lit); AssetDatabase.CreateAsset(mirMat, mirPath); }
         mirMat.shader = lit;
-        mirMat.SetColor("_BaseColor", new Color(0.88f, 0.92f, 0.97f));
-        mirMat.SetFloat("_Metallic", 1f);
-        mirMat.SetFloat("_Smoothness", 0.97f);
+        mirMat.SetColor("_BaseColor", new Color(0.90f, 0.94f, 0.98f));
+        mirMat.SetFloat("_Metallic", 0.96f);
+        mirMat.SetFloat("_Smoothness", 0.98f);
         mirMat.SetTexture("_OcclusionMap", null);
         mirMat.SetFloat("_OcclusionStrength", 0f);
         mirMat.DisableKeyword("_OCCLUSIONMAP");
@@ -409,6 +454,11 @@ public static class CircuitBuilder
         model.name = "Body";
         model.transform.SetParent(root.transform, false);
         foreach (var g in model.GetComponentsInChildren<LODGroup>(true)) Object.DestroyImmediate(g);
+        var stray = new List<GameObject>();
+        foreach (Transform t in model.GetComponentsInChildren<Transform>(true))
+            if (t != model.transform && (t.name.StartsWith("Studio_") || t.name.IndexOf("Backdrop", StringComparison.OrdinalIgnoreCase) >= 0))
+                stray.Add(t.gameObject);
+        foreach (var go in stray) if (go != null) Object.DestroyImmediate(go);
 
         Transform F(string n) => FindDeep(model.transform, n);
         var fl = F("Spin_FL"); var fr = F("Spin_FR"); var rl = F("Spin_RL"); var rr = F("Spin_RR");
@@ -503,12 +553,13 @@ public static class CircuitBuilder
             if (hull != null) Object.DestroyImmediate(hull.gameObject);
         }
 
-        // Livery on chassis/wings/hubs, dedicated materials on wheel/screen/mirrors/tyres; LOD groups by suffix
+        // Livery on chassis/wings/hubs, dedicated materials on wheel/screen/mirrors/cockpit carbon/tyres; LOD groups by suffix
         var livery = AssetDatabase.LoadAssetAtPath<Material>(LiveryDir + "/Livery_00.mat");
         var tyreMat = AssetDatabase.LoadAssetAtPath<Material>(TyreDir + "/Tyre_Medium.mat");
         var swBodyMat = AssetDatabase.LoadAssetAtPath<Material>(LiveryDir + "/SteeringWheel_Body.mat");
         var swScreenMat = AssetDatabase.LoadAssetAtPath<Material>(LiveryDir + "/SteeringWheel_Screen.mat");
         var mirrorMat = AssetDatabase.LoadAssetAtPath<Material>(LiveryDir + "/Mirror_Chrome.mat");
+        var cockpitCarbonMat = AssetDatabase.LoadAssetAtPath<Material>(LiveryDir + "/Cockpit_Carbon.mat");
         var lods = new List<Renderer>[3] { new List<Renderer>(), new List<Renderer>(), new List<Renderer>() };
         foreach (var r in root.GetComponentsInChildren<Renderer>(true))
         {
@@ -516,6 +567,7 @@ public static class CircuitBuilder
             else if (r.name == "SteeringWheel_Screen" && swScreenMat != null) r.sharedMaterial = swScreenMat;
             else if (r.name.StartsWith("F1_SteeringWheel") && swBodyMat != null) r.sharedMaterial = swBodyMat;
             else if (r.name.StartsWith("Mirror_Glass") && mirrorMat != null) r.sharedMaterial = mirrorMat;
+            else if ((r.name.StartsWith("F1_Cockpit_Interior") || r.name.StartsWith("F1_Cockpit_Deflector")) && cockpitCarbonMat != null) r.sharedMaterial = cockpitCarbonMat;
             else if (livery != null) r.sharedMaterial = livery;
             r.shadowCastingMode = r.name == "SteeringWheel_Screen" ? ShadowCastingMode.Off : ShadowCastingMode.On;
             for (int l = 0; l < 3; l++) if (r.name.EndsWith("_LOD" + l)) lods[l].Add(r);
@@ -703,7 +755,7 @@ public static class CircuitBuilder
         manager.player = player.GetComponent<F1Car>();
         var wheelDisp = player.GetComponentInChildren<SteeringWheelDisplay>(true);
         if (wheelDisp != null) wheelDisp.manager = manager;
-        manager.ais = BuildRivals(root, manager);
+        manager.ais = BuildRivals(root, manager, id);
 
         var rivalGo = new GameObject("RivalEngineAudio");
         rivalGo.transform.SetParent(root.transform, false);
@@ -771,7 +823,8 @@ public static class CircuitBuilder
             if (n.StartsWith("Checkpoint_") || n.StartsWith("Trigger_") || n.StartsWith("DRS_Zone") || n.StartsWith("Reset_Point")
                 || n.StartsWith("Track_Limit") || n.StartsWith("AI_") || n.StartsWith("Marker_") || n.StartsWith("Grid_Slot")
                 || n.StartsWith("Cam_") || n.StartsWith("GRP_Cameras") || n.StartsWith("GRP_Lighting")
-                || n.StartsWith("Pit_Crew") || n.StartsWith("Start_Gantry") || n.StartsWith("Track_Lane_Markings") || n.StartsWith("Side_Roads"))
+                || n.StartsWith("Pit_Crew") || n.StartsWith("Pit_Stop_Equipment") || n.StartsWith("Start_Gantry")
+                || n.StartsWith("Track_Lane_Markings") || n.StartsWith("Side_Roads"))
             {
                 t.gameObject.SetActive(false);
                 continue;
@@ -815,6 +868,9 @@ public static class CircuitBuilder
                 smooth = 0.4f; metal = 0.6f; alphaClip = true;
             }
             else if (n.Contains("Gravel")) { tex = T("Gravel_Albedo", "Concrete_PBR_Albedo"); tint = new Color(0.86f, 0.78f, 0.62f); smooth = 0.05f; }
+            else if (n.Contains("Tunnel_Wall") || n.Contains("Tunnel_Ceiling")) { tex = T("Concrete_PBR_Albedo"); tint = n.Contains("Ceiling") ? new Color(0.28f, 0.30f, 0.34f) : new Color(0.46f, 0.48f, 0.52f); smooth = 0.16f; }
+            else if (n.Contains("Tunnel_Light")) { smooth = 0.8f; tint = new Color(1f, 0.96f, 0.86f); }
+            else if (n.Contains("Monaco_White")) { tex = T("Concrete_PBR_Albedo"); tint = new Color(0.86f, 0.87f, 0.89f); smooth = 0.18f; }
             else if (n.Contains("Concrete") || n.Contains("Pit_Wall") || n.Contains("Bridge")) { tex = T("Concrete_PBR_Albedo"); smooth = 0.15f; }
             else if (n.Contains("Armco") || n.Contains("Steel")) { tex = T("Armco_Albedo_1k", "Steel_Albedo_1k"); smooth = 0.55f; metal = 0.8f; }
             else if (n.Contains("Stucco")) { tex = T("Stucco_Wall_Albedo"); smooth = 0.1f; }
@@ -837,6 +893,13 @@ public static class CircuitBuilder
                 var c = tint ?? (src.HasProperty("_BaseColor") ? src.GetColor("_BaseColor") : Color.white);
                 // Keep the authored colour as a gentle tint over the texture
                 m.SetColor("_BaseColor", alphaClip ? Color.white : Color.Lerp(Color.white, c, 0.5f));
+            }
+            if (n.Contains("Tunnel_Light"))
+            {
+                m.SetColor("_BaseColor", new Color(1f, 0.96f, 0.86f));
+                m.EnableKeyword("_EMISSION");
+                m.SetColor("_EmissionColor", new Color(1f, 0.94f, 0.80f) * 4.5f);
+                m.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
             }
             if (smooth >= 0f) m.SetFloat("_Smoothness", smooth);
             if (metal >= 0f) m.SetFloat("_Metallic", metal);
@@ -1040,7 +1103,81 @@ public static class CircuitBuilder
             while (j < rel.Length - 2 && rel[j + 1] < u) j++;
             float a = rel[j], b = rel[j + 1];
             prof[s] = Mathf.Lerp(lats[j], lats[j + 1], b > a ? Mathf.Clamp01((u - a) / (b - a)) : 1f);
-        }        // Side and typical offset from the middle half of the lane
+        }
+
+        // Guarantee physical barrier clearance & narrow-chute midpoint centering at every pit-lane sample
+        Physics.SyncTransforms();
+        var pitColHits = new Collider[8];
+        var pitRayHits = new RaycastHit[8];
+        int nudged = 0;
+        bool HitsBarrier(float sd, float latTest, float rad)
+        {
+            Vector3 wp = track.PointAt(sd) + track.RightAt(sd) * latTest;
+            float gy = RaceManager.GroundAt(wp, out float y) ? y : wp.y;
+            wp.y = gy + 0.65f;
+            int hc = Physics.OverlapSphereNonAlloc(wp, rad, pitColHits, ~0, QueryTriggerInteraction.Ignore);
+            for (int k = 0; k < hc; k++)
+                if (pitColHits[k].name.StartsWith("Barrier")) return true;
+            return false;
+        }
+        bool RayBarrierDist(Vector3 origin, Vector3 dir, out float dist)
+        {
+            dist = 5f;
+            int hc = Physics.RaycastNonAlloc(origin, dir, pitRayHits, 5f, ~0, QueryTriggerInteraction.Ignore);
+            bool found = false;
+            for (int k = 0; k < hc; k++)
+            {
+                var h = pitRayHits[k];
+                if (h.collider != null && h.collider.name.StartsWith("Barrier") && h.distance < dist)
+                { dist = h.distance; found = true; }
+            }
+            return found;
+        }
+        float[] radii = { 1.30f, 1.05f, 0.90f };
+        float[] testDeltas = { 0.35f, -0.35f, 0.70f, -0.70f, 1.05f, -1.05f, 1.45f, -1.45f, 1.90f, -1.90f, 2.40f, -2.40f, 3.00f, -3.00f };
+        for (int s = 0; s < steps; s++)
+        {
+            float sd = Mathf.Repeat(startD + s * 2f, L);
+            float orig = prof[s];
+            if (HitsBarrier(sd, orig, 1.30f))
+            {
+                float centerDir = -Mathf.Sign(Mathf.Abs(orig) > 0.1f ? orig : 1f);
+                bool fixedSample = false;
+                foreach (float rad in radii)
+                {
+                    foreach (float dAbs in testDeltas)
+                    {
+                        float cand = orig + (dAbs > 0f ? Mathf.Abs(dAbs) * centerDir : -Mathf.Abs(dAbs) * centerDir);
+                        if (!HitsBarrier(sd, cand, rad)) { prof[s] = cand; nudged++; fixedSample = true; break; }
+                    }
+                    if (fixedSample) break;
+                }
+            }
+            // Bilateral midpoint centering whenever enclosed in a narrow pit chute
+            Vector3 right = track.RightAt(sd);
+            Vector3 wpNow = track.PointAt(sd) + right * prof[s];
+            wpNow.y = (RaceManager.GroundAt(wpNow, out float gy2) ? gy2 : wpNow.y) + 0.65f;
+            if (RayBarrierDist(wpNow, -right, out float dL) && RayBarrierDist(wpNow, right, out float dR)
+                && dL < 3.5f && dR < 3.5f && Mathf.Min(dL, dR) < 1.25f)
+            {
+                float centered = prof[s] + (dR - dL) * 0.5f;
+                if (!HitsBarrier(sd, centered, 0.88f) && Mathf.Abs(centered - prof[s]) > 0.05f)
+                { prof[s] = centered; nudged++; }
+            }
+        }
+        for (int pass = 0; pass < 2; pass++)
+        {
+            var sm = (float[])prof.Clone();
+            for (int s = 1; s < steps - 1; s++)
+            {
+                float blended = prof[s - 1] * 0.25f + prof[s] * 0.50f + prof[s + 1] * 0.25f;
+                float sd = Mathf.Repeat(startD + s * 2f, L);
+                if (!HitsBarrier(sd, blended, 0.95f)) sm[s] = blended;
+            }
+            prof = sm;
+        }
+
+        // Side and typical offset from the middle half of the lane
         var mid = new List<float>();
         for (int s = steps / 4; s < steps * 3 / 4; s++) mid.Add(prof[s]);
         mid.Sort((x, y) => Mathf.Abs(x).CompareTo(Mathf.Abs(y)));
@@ -1087,28 +1224,28 @@ public static class CircuitBuilder
                 sumSide += rawGLats[t] - m.PitLat(db);
             }
             m.garageSide = sumSide >= 0f ? 1f : -1f;
-            float[] tryOffsets = { 2.45f, 2.15f, 1.85f, 1.55f };
+            float[] tryOffsets = { 2.35f, 2.10f, 1.85f, 1.60f };
             var colHits = new Collider[8];
             for (int t = 0; t < teams; t++)
             {
                 float db = m.boxDistances[t];
                 float fLat = m.PitLat(db);
-                float maxShift = Mathf.Abs(rawGLats[t] - fLat) * 0.45f;
-                float chosen = fLat + m.garageSide * Mathf.Min(1.8f, maxShift);
+                float maxShift = Mathf.Clamp(Mathf.Abs(rawGLats[t] - fLat) * 0.62f, 1.85f, 2.40f);
+                float chosen = fLat + m.garageSide * Mathf.Min(1.85f, maxShift);
                 foreach (float offTry in tryOffsets)
                 {
                     float cLat = fLat + m.garageSide * Mathf.Min(offTry, maxShift);
                     Vector3 wp = track.PointAt(db) + track.RightAt(db) * cLat;
                     if (!RaceManager.GroundAt(wp, out float gy)) continue;
                     wp.y = gy + 0.65f;
-                    int hc = Physics.OverlapSphereNonAlloc(wp, 1.0f, colHits, ~0, QueryTriggerInteraction.Ignore);
+                    int hc = Physics.OverlapSphereNonAlloc(wp, 0.90f, colHits, ~0, QueryTriggerInteraction.Ignore);
                     bool hitWall = false;
                     for (int k = 0; k < hc; k++) if (colHits[k].name.StartsWith("Barrier")) { hitWall = true; break; }
                     if (!hitWall) { chosen = cLat; break; }
                 }
                 m.boxOffsets[t] = chosen;
             }
-            return $"pit lane {span:0} m, offset {off:0.0} m, entry {m.pitEntryStart:0}-{m.pitEntryEnd:0}, exit {m.pitExitStart:0}-{m.pitExitEnd:0}, 11 garages aligned (side {m.garageSide:+0;-0})";
+            return $"pit lane {span:0} m (nudged {nudged}), offset {off:0.0} m, entry {m.pitEntryStart:0}-{m.pitEntryEnd:0}, exit {m.pitExitStart:0}-{m.pitExitEnd:0}, 11 garages aligned (side {m.garageSide:+0;-0})";
         }
         else
         {
@@ -1443,11 +1580,12 @@ public static class CircuitBuilder
         return car;
     }
 
-    static RaceAI[] BuildRivals(GameObject root, RaceManager m)
+    static RaceAI[] BuildRivals(GameObject root, RaceManager m, string id)
     {
         var parent = new GameObject("Field");
         parent.transform.SetParent(root.transform, false);
         var list = new RaceAI[Cars - 1];
+        bool monaco = id == "Monaco";
         for (int k = 1; k < Cars; k++)
         {
             float d = -(10f + 8f * k), lat = Mathf.Min(2.4f, track.halfWidth - 2.2f) * (k % 2 == 0 ? -1f : 1f);
@@ -1463,12 +1601,12 @@ public static class CircuitBuilder
             if (col != null) col.isTrigger = true;   // contact with the player is resolved by F1Car
             var ai = car.AddComponent<RaceAI>();
             ai.driverName = "Driver " + k;
-            ai.maxSpeed = 88f;
-            ai.cornerGrip = 17f;
-            ai.aeroGrip = 0.0055f;
-            ai.acceleration = 11f;
-            ai.braking = 14f;
-            ai.aeroBraking = 0.0035f;
+            ai.maxSpeed = 84f;
+            ai.cornerGrip = monaco ? 12.6f : 14.5f;
+            ai.aeroGrip = monaco ? 0.0036f : 0.0044f;
+            ai.acceleration = 10.2f;
+            ai.braking = 13.5f;
+            ai.aeroBraking = 0.0032f;
             ai.lane = lat;
             ai.progress = d;
             ai.parkLane = m.pitLaneOffset;
@@ -1482,7 +1620,7 @@ public static class CircuitBuilder
         var go = new GameObject("Main Camera") { tag = "MainCamera" };
         var cam = go.AddComponent<Camera>();
         go.AddComponent<AudioListener>();
-        cam.nearClipPlane = 0.06f;
+        cam.nearClipPlane = 0.03f;
         cam.farClipPlane = 4000f;
         var camData = cam.GetUniversalAdditionalCameraData();
         camData.renderPostProcessing = true;
@@ -1496,9 +1634,9 @@ public static class CircuitBuilder
         follow.tvPodPitch = 8f;
         var swPivot = FindDeep(player.transform, "SteeringWheel_Pivot");
         Vector3 sw = swPivot != null ? player.transform.InverseTransformPoint(swPivot.position)
-                   : (geo != null ? geo.steeringWheelLocalPos : new Vector3(0f, 0.648f, 0.56f));
-        follow.cockpitOffset = new Vector3(0f, sw.y + 0.145f, sw.z - 0.50f);
-        follow.cockpitPitch = 4.5f;
+                   : (geo != null ? geo.steeringWheelLocalPos : new Vector3(0f, 0.650f, 0.585f));
+        follow.cockpitOffset = new Vector3(0f, sw.y + 0.098f, sw.z - 0.305f);
+        follow.cockpitPitch = 2.8f;
         follow.distance = 5.6f;
         follow.height = 1.45f;
         follow.view = ChaseCamera.View.Chase;
@@ -1621,18 +1759,26 @@ public static class CircuitBuilder
             Object.DestroyImmediate(tex);
         }
 
-        // 1. Cockpit View (hide F1_Cockpit_Driver just like runtime ChaseCamera)
+        // 1. Cockpit View (hide F1_Cockpit_Driver only if desired, verify straight + 45 deg steered with gloves visible)
         var hidden = new List<Renderer>();
         foreach (var mr in player.GetComponentsInChildren<Renderer>(true))
             if (mr.name.StartsWith("F1_Cockpit_Driver") && mr.enabled) { mr.enabled = false; hidden.Add(mr); }
 
-        Vector3 cockOff = follow != null ? follow.cockpitOffset : new Vector3(0f, 0.793f, 0.06f);
-        float cockPitch = follow != null ? follow.cockpitPitch : 4.5f;
+        Vector3 cockOff = follow != null ? follow.cockpitOffset : new Vector3(0f, 0.748f, 0.28f);
+        float cockPitch = follow != null ? follow.cockpitPitch : 2.8f;
         cam.transform.position = player.transform.TransformPoint(cockOff);
         cam.transform.rotation = player.transform.rotation * Quaternion.Euler(cockPitch, 0f, 0f);
-        cam.fieldOfView = follow != null ? follow.baseFov + 4f : 66f;
+        cam.fieldOfView = 55f;
         Snap("unity_verify_cockpit.png");
 
+        var swPivotSnap = FindDeep(player.transform, "SteeringWheel_Pivot");
+        if (swPivotSnap != null)
+        {
+            Quaternion origSwRot = swPivotSnap.localRotation;
+            swPivotSnap.localRotation = origSwRot * Quaternion.Euler(0f, 0f, 45f);
+            Snap("unity_verify_cockpit_steered.png");
+            swPivotSnap.localRotation = origSwRot;
+        }
         foreach (var mr in hidden) mr.enabled = true;
 
         // 2. Chase View (rear ORBITAL DRS flap, exhaust, rain light, glossy reflections)
@@ -1656,6 +1802,60 @@ public static class CircuitBuilder
             Object.DestroyImmediate(tmpScreenMat);
         }
         Debug.Log("Rendered 3 Unity URP verification screenshots cleanly to scratch/");
+    }
+
+    public static void VerifyBarrierContainment()
+    {
+        var sb = new System.Text.StringBuilder("BARRIER CONTAINMENT VERIFICATION:\n");
+        bool allOk = true;
+        foreach (var t in GameSession.Tracks)
+        {
+            string p = SceneDir + "/" + t.scene + ".unity";
+            if (!File.Exists(p)) { allOk = false; sb.AppendLine($"  [FAIL] {t.id}: scene missing"); continue; }
+            EditorSceneManager.OpenScene(p, OpenSceneMode.Single);
+            Physics.SyncTransforms();
+            var rm = Object.FindFirstObjectByType<RaceManager>();
+            RaceTrack tr = rm != null ? rm.track : null;
+            if (tr == null || tr.length < 10f)
+            {
+                allOk = false;
+                sb.AppendLine($"  [FAIL] {t.id}: missing RaceTrack");
+                continue;
+            }
+            int steps = 0, missL = 0, missR = 0;
+            for (float d = 0f; d < tr.length; d += 4f)
+            {
+                steps++;
+                Vector3 pt = tr.PointAt(d);
+                Vector3 right = tr.RightAt(d);
+                float gy = SurfaceY(pt);
+                for (int s = 0; s < 2; s++)
+                {
+                    Vector3 dir = s == 0 ? -right : right;
+                    bool sideOk = true;
+                    foreach (float h in new[] { 0.55f, 2.0f })
+                    {
+                        Vector3 origin = new Vector3(pt.x, gy + h, pt.z);
+                        var hits = Physics.RaycastAll(origin, dir, 120f, ~0, QueryTriggerInteraction.Ignore);
+                        bool wallHit = false;
+                        for (int i = 0; i < hits.Length; i++)
+                        {
+                            var hit = hits[i];
+                            if (hit.collider == null || hit.collider.attachedRigidbody != null) continue;
+                            if (hit.distance > 1.5f && Mathf.Abs(hit.normal.y) < 0.65f) { wallHit = true; break; }
+                        }
+                        if (!wallHit) { sideOk = false; break; }
+                    }
+                    if (!sideOk) { if (s == 0) missL++; else missR++; }
+                }
+            }
+            bool ok = missL == 0 && missR == 0;
+            if (!ok) allOk = false;
+            sb.AppendLine($"  [{(ok ? "PASS" : "FAIL")}] BarrierContainment {t.id}: missL={missL}/{steps} missR={missR}/{steps}");
+            if (!ok) Debug.LogError($"BarrierContainment FAILED on {t.id}: missL={missL}/{steps} missR={missR}/{steps}");
+        }
+        Debug.Log(sb.ToString());
+        if (!allOk) Debug.LogError("VerifyBarrierContainment detected barrier gaps!");
     }
 
     public static void PitLaneVerifyTest()
@@ -1685,92 +1885,98 @@ public static class CircuitBuilder
             sb.AppendLine($"  [{(ok ? "PASS" : "FAIL")}] {t.id}: 11 boxes aligned (side {rm.garageSide:+0;-0}, bay0={rm.boxDistances[0]:0}m@{rm.boxOffsets[0]:0.0}m, bay10={rm.boxDistances[10]:0}m@{rm.boxOffsets[10]:0.0}m, grounded={grounded}/11)");
         }
 
-        // Full Pit Entry -> Red Bull Garage Stop + Wing Repair -> Pit Exit Simulation & Render on Baku
-        string bakuPath = SceneDir + "/Final Circuit Baku.unity";
-        EditorSceneManager.OpenScene(bakuPath, OpenSceneMode.Single);
-        var manager = Object.FindFirstObjectByType<RaceManager>();
-        var player = GameObject.Find("F1_Player");
-        var f1 = player != null ? player.GetComponent<F1Car>() : null;
-        var cam = Camera.main;
-        if (manager != null && player != null && f1 != null && cam != null)
+        // Full Pit Entry -> Red Bull Garage Stop + Wing Repair -> Pit Exit Simulation & Render on Baku + Monaco clearance test
+        foreach (string verifyId in new[] { "Baku", "Monaco" })
         {
-            var lod = player.GetComponent<LODGroup>();
-            if (lod != null) lod.ForceLOD(0);
-            RaceManager.ApplyLivery(player, GameSession.Teams[1].primary, GameSession.Teams[1].secondary, Color.yellow, GameSession.Teams[1].livery);
-            f1.Init();
-            f1.ForceBreakFrontWingForTest();
-            bool brokeWing = f1.FrontWingLost;
-
-            float entryD = Mathf.Repeat(manager.pitEntryStart + 4f, manager.track.length);
-            manager.BuildPitCrews();
-            manager.StartTestPitStop(1, entryD, manager.PitLat(entryD), false);
-
-            string outDir = @"C:\Users\USERAS\.gemini\antigravity\brain\9cf7120c-afb5-4b52-a65d-90ae4fdbb68f\scratch";
-            Directory.CreateDirectory(outDir);
-            var rt = new RenderTexture(1280, 720, 24, RenderTextureFormat.ARGB32) { antiAliasing = 4 };
-            cam.targetTexture = rt;
-            void Snap(string fn)
+            string cPath = SceneDir + $"/Final Circuit {verifyId}.unity";
+            EditorSceneManager.OpenScene(cPath, OpenSceneMode.Single);
+            var manager = Object.FindFirstObjectByType<RaceManager>();
+            var player = GameObject.Find("F1_Player");
+            var f1 = player != null ? player.GetComponent<F1Car>() : null;
+            var cam = Camera.main;
+            if (manager != null && player != null && f1 != null && cam != null)
             {
-                cam.Render();
-                RenderTexture.active = rt;
-                var tex = new Texture2D(1280, 720, TextureFormat.RGB24, false);
-                tex.ReadPixels(new Rect(0, 0, 1280, 720), 0, 0);
-                tex.Apply();
-                File.WriteAllBytes(Path.Combine(outDir, fn), tex.EncodeToPNG());
-                Object.DestroyImmediate(tex);
+                var lod = player.GetComponent<LODGroup>();
+                if (lod != null) lod.ForceLOD(0);
+                RaceManager.ApplyLivery(player, GameSession.Teams[1].primary, GameSession.Teams[1].secondary, Color.yellow, GameSession.Teams[1].livery);
+                f1.Init();
+                f1.ForceBreakFrontWingForTest();
+                bool brokeWing = f1.FrontWingLost;
+
+                float entryD = Mathf.Repeat(manager.pitEntryStart + 4f, manager.track.length);
+                manager.BuildPitCrews();
+                manager.StartTestPitStop(1, entryD, manager.PitLat(entryD), false);
+
+                string outDir = @"C:\Users\USERAS\.gemini\antigravity\brain\9cf7120c-afb5-4b52-a65d-90ae4fdbb68f\scratch";
+                Directory.CreateDirectory(outDir);
+                var rt = new RenderTexture(1280, 720, 24, RenderTextureFormat.ARGB32) { antiAliasing = 4 };
+                cam.targetTexture = rt;
+                string snapPrefix = verifyId == "Monaco" ? "unity_verify_monaco_" : "unity_verify_";
+                void Snap(string fn)
+                {
+                    if (rt == null) return;
+                    cam.Render();
+                    RenderTexture.active = rt;
+                    var tex = new Texture2D(1280, 720, TextureFormat.RGB24, false);
+                    tex.ReadPixels(new Rect(0, 0, 1280, 720), 0, 0);
+                    tex.Apply();
+                    File.WriteAllBytes(Path.Combine(outDir, fn), tex.EncodeToPNG());
+                    Object.DestroyImmediate(tex);
+                }
+
+                bool pitStopSnapped = false, pitExitSnapped = false;
+                int barrierHitsDuringPit = 0;
+                var hitCols = new Collider[8];
+                for (int step = 0; step < 2500 && manager.PlayerInPit; step++)
+                {
+                    manager.StepTestPitFixed(0.02f);
+
+                    Vector3 probe = player.transform.position + Vector3.up * 0.65f;
+                    int hc = Physics.OverlapSphereNonAlloc(probe, 0.85f, hitCols, ~0, QueryTriggerInteraction.Ignore);
+                    for (int k = 0; k < hc; k++)
+                    {
+                        if (!hitCols[k].name.StartsWith("Barrier")) continue;
+                        barrierHitsDuringPit++;
+                        if (barrierHitsDuringPit <= 5)
+                            Debug.Log($"[PitBarrier:{verifyId}] step={step} {manager.PitDebugState} col={hitCols[k].name} pos={player.transform.position}");
+                    }
+
+                    if (!pitStopSnapped && f1.SpeedKmh < 0.5f && step > 100)
+                    {
+                        pitStopSnapped = true;
+                        var box = manager.pitBoxes[1];
+                        box.PreviewServiceAt(1.45f, 4.7f, true);
+                        Vector3 gVec = player.transform.right * RaceManager.PitCameraSide;
+                        cam.transform.position = player.transform.position - player.transform.forward * 4.6f + gVec * 2.85f + Vector3.up * 2.35f;
+                        cam.transform.LookAt(player.transform.position + Vector3.up * 0.62f + player.transform.forward * 0.45f);
+                        cam.fieldOfView = 52f;
+                        Snap(snapPrefix + (verifyId == "Monaco" ? "pitbox.png" : "pitstop.png"));
+                    }
+
+                    if (pitStopSnapped && !pitExitSnapped && f1.SpeedKmh > 68f && !f1.FrontWingLost)
+                    {
+                        pitExitSnapped = true;
+                        cam.transform.position = player.transform.TransformPoint(new Vector3(0.8f, 2.2f, -6.2f));
+                        cam.transform.LookAt(player.transform.TransformPoint(new Vector3(0f, 0.7f, 4.5f)));
+                        cam.fieldOfView = 56f;
+                        Snap(snapPrefix + "pitexit.png");
+                    }
+                }
+
+                if (rt != null)
+                {
+                    cam.targetTexture = null;
+                    RenderTexture.active = null;
+                    Object.DestroyImmediate(rt);
+                }
+
+                var rb = player.GetComponent<Rigidbody>();
+                bool handoffOk = !manager.PlayerInPit && !rb.isKinematic && !f1.FrontWingLost && brokeWing && f1.SpeedKmh > 80f && f1.Gear >= 2 && barrierHitsDuringPit == 0;
+                if (!handoffOk) allOk = false;
+                sb.AppendLine($"  [{(handoffOk ? "PASS" : "FAIL")}] {verifyId} full pit stop + wing repair + exit: broke={brokeWing}, repaired={!f1.FrontWingLost}, handoffSpeed={f1.SpeedKmh:0}km/h (gear {f1.Gear}), barrierHits={barrierHitsDuringPit}");
             }
-
-            bool pitStopSnapped = false, pitExitSnapped = false;
-            int barrierHitsDuringPit = 0;
-            var hitCols = new Collider[8];
-            for (int step = 0; step < 2500 && manager.PlayerInPit; step++)
-            {
-                manager.StepTestPitFixed(0.02f);
-
-                // Check barrier clearance along pit exit corridor
-                Vector3 probe = player.transform.position + Vector3.up * 0.65f;
-                int hc = Physics.OverlapSphereNonAlloc(probe, 0.85f, hitCols, ~0, QueryTriggerInteraction.Ignore);
-                for (int k = 0; k < hc; k++)
-                {
-                    if (!hitCols[k].name.StartsWith("Barrier")) continue;
-                    barrierHitsDuringPit++;
-                    if (barrierHitsDuringPit <= 5)
-                        Debug.Log($"[PitBarrier] step={step} {manager.PitDebugState} col={hitCols[k].name} pos={player.transform.position}");
-                }
-
-                // Snap dramatic pit stop view when stopped in front of Red Bull garage & wing crew is mounting new wing!
-                if (!pitStopSnapped && f1.SpeedKmh < 0.5f && step > 100)
-                {
-                    pitStopSnapped = true;
-                    var box = manager.pitBoxes[1];
-                    box.PreviewServiceAt(1.45f, 4.7f, true);
-                    Vector3 gVec = player.transform.right * -manager.garageSide;
-                    cam.transform.position = player.transform.position + player.transform.forward * 5.6f + gVec * 4.8f + Vector3.up * 2.4f;
-                    cam.transform.LookAt(player.transform.position + Vector3.up * 0.85f + player.transform.forward * 0.3f);
-                    cam.fieldOfView = 45f;
-                    Snap("unity_verify_pitstop.png");
-                }
-
-                if (pitStopSnapped && !pitExitSnapped && f1.SpeedKmh > 95f && !f1.FrontWingLost)
-                {
-                    pitExitSnapped = true;
-                    cam.transform.position = player.transform.TransformPoint(new Vector3(0.8f, 2.2f, -6.2f));
-                    cam.transform.LookAt(player.transform.TransformPoint(new Vector3(0f, 0.7f, 4.5f)));
-                    cam.fieldOfView = 56f;
-                    Snap("unity_verify_pitexit.png");
-                }
-            }
-
-            cam.targetTexture = null;
-            RenderTexture.active = null;
-            Object.DestroyImmediate(rt);
-
-            var rb = player.GetComponent<Rigidbody>();
-            bool handoffOk = !manager.PlayerInPit && !rb.isKinematic && !f1.FrontWingLost && brokeWing && f1.SpeedKmh > 90f && f1.Gear >= 2 && barrierHitsDuringPit == 0;
-            if (!handoffOk) allOk = false;
-            sb.AppendLine($"  [{(handoffOk ? "PASS" : "FAIL")}] Baku full pit stop + wing repair + exit: broke={brokeWing}, repaired={!f1.FrontWingLost}, handoffSpeed={f1.SpeedKmh:0}km/h (gear {f1.Gear}), barrierHits={barrierHitsDuringPit}, shots={pitStopSnapped}/{pitExitSnapped}");
+            else { allOk = false; sb.AppendLine($"  [FAIL] Missing {verifyId} objects for PitLaneVerifyTest"); }
         }
-        else { allOk = false; sb.AppendLine("  [FAIL] Missing Baku objects for PitLaneVerifyTest"); }
 
         if (allOk) Debug.Log("PitLaneVerifyTest PASSED:\n" + sb);
         else Debug.LogError("PitLaneVerifyTest FAILED:\n" + sb);

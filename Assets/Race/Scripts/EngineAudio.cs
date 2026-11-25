@@ -17,10 +17,10 @@ public class EngineAudio : MonoBehaviour
 
     static readonly Profile[] Profiles =
     {
-        new Profile { cylinders = 10, rpmMin = 6800f, rpmMax = 19000f, f2 = 2150f, f3 = 4250f, drive = 2.1f, bodyQ = 0.85f },
-        new Profile { cylinders = 8,  rpmMin = 6200f, rpmMax = 18000f, f2 = 1650f, f3 = 3550f, drive = 2.4f, bodyQ = 0.75f },
-        new Profile { cylinders = 12, rpmMin = 5800f, rpmMax = 17500f, f2 = 2650f, f3 = 5100f, drive = 1.85f, bodyQ = 0.92f },
-        new Profile { cylinders = 6,  rpmMin = 4800f, rpmMax = 12600f, f2 = 1120f, f3 = 2650f, drive = 2.15f, bodyQ = 0.68f, turbo = true },
+        new Profile { cylinders = 10, rpmMin = 6400f, rpmMax = 18500f, f2 = 1450f, f3 = 2600f, drive = 1.75f, bodyQ = 0.78f },
+        new Profile { cylinders = 8,  rpmMin = 5800f, rpmMax = 17500f, f2 = 1220f, f3 = 2350f, drive = 1.95f, bodyQ = 0.72f },
+        new Profile { cylinders = 12, rpmMin = 5400f, rpmMax = 17000f, f2 = 1680f, f3 = 2950f, drive = 1.65f, bodyQ = 0.85f },
+        new Profile { cylinders = 6,  rpmMin = 4400f, rpmMax = 12400f, f2 = 920f,  f3 = 1950f, drive = 1.85f, bodyQ = 0.65f, turbo = true },
     };
 
     public VehicleBase car;
@@ -40,23 +40,24 @@ public class EngineAudio : MonoBehaviour
     // Audio-thread state
     double phase, crankPhase, sqPh, sqLfo, kerbPh;
     int cyl;
-    float pulseA, pulseB, crackle, hpA, hpB, agc = 1f, rms = 0.06f, windLp, sqBp1, sqBp2, turboPh, mgukPh, wgPh;
+    float pulseA, pulseB, crackle, hpA, hpB, agc = 1f, rms = 0.06f, windLp, combLp, sqBp1, sqBp2, turboPh, mgukPh, wgPh;
     uint noise = 22222;
     readonly float[] cylAmp = new float[12];
-    Biquad bodyA = new Biquad(), f2A = new Biquad(), f3A = new Biquad();
-    Biquad bodyB = new Biquad(), f2B = new Biquad(), f3B = new Biquad();
+    Biquad bodyA = new Biquad(), f2A = new Biquad(), f3A = new Biquad(), exhaustLpA = new Biquad();
+    Biquad bodyB = new Biquad(), f2B = new Biquad(), f3B = new Biquad(), exhaustLpB = new Biquad();
     Biquad crackBp = new Biquad();
     readonly float[] delay = new float[64];
     int delayPos;
 
     AudioSource mainSrc, oneShots;
     AudioSource wavIdle, wavLow, wavMid, wavHigh, wavOffload, wavTurbo;
+    Rigidbody carRb;
     bool hasCustomEngineLoops;
     static AudioClip clunk, thud, gun, radio, customKerbClip;
     static bool optionalClipsChecked;
     int lastGear;
     float lastImpact = -1f, smoothThrottle = 0.2f, smoothRpm = 4800f, prevSmoothThrottle = 0.2f;
-    float limiterTimer, shiftCutTimer, blipTimer, wastegateTimer, lastKerbAudioTime = -1f;
+    float limiterTimer, pitLimiterTimer, shiftCutTimer, blipTimer, wastegateTimer, lastKerbAudioTime = -1f;
 
     class Biquad
     {
@@ -75,6 +76,22 @@ public class EngineAudio : MonoBehaviour
             b1 = 0f;
             b2 = -alpha / a0;
             a1 = -2f * Mathf.Cos(w0) / a0;
+            a2 = (1f - alpha) / a0;
+        }
+
+        public void LowPass(float f, float q, float sr)
+        {
+            if (sr <= 100f) sr = 48000f;
+            f = Mathf.Clamp(f, 80f, sr * 0.42f);
+            q = Mathf.Clamp(q, 0.5f, 2.5f);
+            float w0 = 2f * Mathf.PI * f / sr;
+            float cosw = Mathf.Cos(w0), alpha = Mathf.Sin(w0) / (2f * q);
+            float a0 = 1f + alpha;
+            if (a0 < 1e-5f) a0 = 1f;
+            b0 = (1f - cosw) * 0.5f / a0;
+            b1 = (1f - cosw) / a0;
+            b2 = b0;
+            a1 = -2f * cosw / a0;
             a2 = (1f - alpha) / a0;
         }
 
@@ -115,6 +132,7 @@ public class EngineAudio : MonoBehaviour
     {
         if (initialized) return;
         if (car == null && !rival) car = GetComponentInParent<VehicleBase>();
+        carRb = car != null ? car.GetComponent<Rigidbody>() : null;
 
         int sr = AudioSettings.outputSampleRate;
         sampleRate = sr > 1000 ? sr : 48000;
@@ -268,14 +286,26 @@ public class EngineAudio : MonoBehaviour
             if (f1 != null)
                 deploySignal = (throttle > 0.7f && f1.ErsCharge > 0.05f) ? 1f : (f1.LongitudinalG < -1.2f ? 0.8f : 0.25f);
 
-            // Rev limiter ignition cut
-            if (rpm >= maxRpm - 70f && throttle > 0.45f)
+            // Pit-limiter rhythmic exhaust burble vs rev limiter ignition cut
+            bool inPitLimiter = carRb != null && carRb.isKinematic && speed > 2f;
+            if (inPitLimiter)
             {
+                pitLimiterTimer += dt;
+                limiterTimer = 0f;
+                limiterCut = Mathf.Repeat(pitLimiterTimer * 15f, 1f) < 0.42f ? 0.45f : 0f;
+                rpm = Mathf.Min(rpm, maxRpm * 0.42f);
+                rpm01 = Mathf.InverseLerp(3600f, maxRpm, rpm);
+                throttle = Mathf.Min(throttle, 0.28f);
+            }
+            else if (rpm >= maxRpm - 70f && throttle > 0.45f)
+            {
+                pitLimiterTimer = 0f;
                 limiterTimer += dt;
                 limiterCut = Mathf.Repeat(limiterTimer * 24f, 1f) < 0.48f ? 1f : 0f;
             }
             else
             {
+                pitLimiterTimer = 0f;
                 limiterTimer = 0f;
                 limiterCut = 0f;
             }
@@ -407,46 +437,50 @@ public class EngineAudio : MonoBehaviour
         float revRise = Mathf.Clamp01(fh / 1600f);
         bodyA.BandPass(fh, prof.bodyQ, sr);
         bodyB.BandPass(fh * 1.012f, prof.bodyQ, sr);
-        f2A.BandPass(prof.f2 * (0.85f + 0.30f * revRise), 1.6f, sr);
-        f2B.BandPass(prof.f2 * (0.88f + 0.30f * revRise), 1.6f, sr);
-        f3A.BandPass(prof.f3 * (0.80f + 0.40f * revRise), 2.2f, sr);
-        f3B.BandPass(prof.f3 * (0.83f + 0.40f * revRise), 2.2f, sr);
-        crackBp.BandPass(950f, 1.15f, sr);
+        f2A.BandPass(prof.f2 * (0.85f + 0.25f * revRise), 1.4f, sr);
+        f2B.BandPass(prof.f2 * (0.88f + 0.25f * revRise), 1.4f, sr);
+        f3A.BandPass(prof.f3 * (0.82f + 0.28f * revRise), 1.8f, sr);
+        f3B.BandPass(prof.f3 * (0.85f + 0.28f * revRise), 1.8f, sr);
+        float lpCut = Mathf.Min(3200f, 1350f + 1500f * ld + 450f * revRise);
+        exhaustLpA.LowPass(lpCut, 0.72f, sr);
+        exhaustLpB.LowPass(lpCut, 0.72f, sr);
+        crackBp.BandPass(880f, 1.15f, sr);
 
         double inc = fh / sr;
         double crankInc = chz / sr;
         float halfCyl = prof.cylinders * 0.5f;
-        float decay = Mathf.Exp(-fh * 2.8f / sr);
-        float hpK = 1f - Mathf.Exp(-2f * Mathf.PI * 38f / sr);
+        float decay = Mathf.Exp(-fh * 2.5f / sr);
+        float hpK = 1f - Mathf.Exp(-2f * Mathf.PI * 34f / sr);
         float aw = 1f - Mathf.Exp(-2f * Mathf.PI * 460f / sr);
         float crackDecay = Mathf.Exp(-1f / (0.018f * sr));
-        float drive = prof.drive * Mathf.Lerp(0.75f, 1.25f, ld);
+        float drive = prof.drive * Mathf.Lerp(0.72f, 1.18f, ld);
         int delaySamples = Mathf.Clamp(Mathf.RoundToInt(sr * 0.00055f), 1, delay.Length - 1);
         double sqInc = 1050.0 / sr;
         float twoPi = 2f * Mathf.PI;
 
-        // Band-limited harmonic order weights per harmonic order of firing frequency (0.5x, 1x, 1.5x, 2x, 3x, 4x, 6x)
-        float scream = prof.cylinders >= 10 ? 1.15f : (prof.turbo ? 0.72f : 0.92f);
-        float g05 = BandGain(fh * 0.5f, nyq) * (prof.turbo ? 0.36f : 0.24f);
-        float g10 = BandGain(fh * 1.0f, nyq) * 0.52f;
-        float g15 = BandGain(fh * 1.5f, nyq) * 0.26f * scream;
-        float g20 = BandGain(fh * 2.0f, nyq) * (0.28f + 0.22f * ld) * scream;
-        float g30 = BandGain(fh * 3.0f, nyq) * (0.14f + 0.22f * ld) * scream;
-        float g40 = BandGain(fh * 4.0f, nyq) * (0.06f + 0.16f * ld) * scream;
-        float g60 = BandGain(fh * 6.0f, nyq) * (0.02f + 0.09f * ld) * scream;
+        // Warm throatier harmonic weighting (richer low/mid chest, reduced mosquito upper harmonics)
+        float scream = prof.cylinders >= 10 ? 1.05f : (prof.turbo ? 0.65f : 0.85f);
+        float g05 = BandGain(fh * 0.5f, nyq) * (prof.turbo ? 0.48f : 0.42f);
+        float g10 = BandGain(fh * 1.0f, nyq) * 0.62f;
+        float g15 = BandGain(fh * 1.5f, nyq) * 0.24f * scream;
+        float g20 = BandGain(fh * 2.0f, nyq) * (0.18f + 0.14f * ld) * scream;
+        float g30 = BandGain(fh * 3.0f, nyq) * (0.06f + 0.08f * ld) * scream;
+        float g40 = BandGain(fh * 4.0f, nyq) * (0.02f + 0.04f * ld) * scream;
+        float g60 = BandGain(fh * 6.0f, nyq) * (0.008f + 0.014f * ld) * scream;
 
         for (int i = 0; i < data.Length; i += channels)
         {
+            combLp += 0.03f * (Noise() - combLp);
             phase += inc;
             if (phase >= 1.0)
             {
                 phase -= 1.0;
                 cyl = (cyl + 1) % prof.cylinders;
-                float a = cylAmp[cyl] * (0.35f + 0.65f * ld) * (1f - cut);
+                float a = cylAmp[cyl] * (0.35f + 0.65f * ld) * (1f - cut) * (1f + 0.14f * combLp);
                 if ((cyl & 1) == 0) pulseA += a;
                 else pulseB += a;
 
-                if (ld < 0.16f && fh > 420f && Noise() > 0.91f)
+                if (ld < 0.16f && fh > 360f && Noise() > 0.90f)
                     crackle = 0.85f + 0.45f * Noise();
             }
 
@@ -471,45 +505,45 @@ public class EngineAudio : MonoBehaviour
                     Mathf.Sin(th * 6.0f + 0.2f) * g60;
                 harm *= (1f - cut * 0.85f);
 
-                // Uneven cylinder combustion pulses + resonant formants
+                // Uneven cylinder combustion pulses + resonant formants + warm cabinet low-pass
                 float nA = Noise(), nB = Noise();
-                float xA = pulseA * (1f + 0.22f * nA);
-                float xB = pulseB * (1f + 0.22f * nB);
+                float xA = pulseA * (1f + 0.24f * nA);
+                float xB = pulseB * (1f + 0.24f * nB);
                 hpA += hpK * (xA - hpA); xA -= hpA;
                 hpB += hpK * (xB - hpB); xB -= hpB;
 
-                float bright = 0.40f + 0.60f * ld;
-                float pulseResA = xA * 0.25f + bodyA.Process(xA) * 1.05f + f2A.Process(xA) * 0.85f * bright + f3A.Process(xA) * 0.55f * ld;
-                float pulseResB = xB * 0.25f + bodyB.Process(xB) * 1.05f + f2B.Process(xB) * 0.85f * bright + f3B.Process(xB) * 0.55f * ld;
+                float bright = 0.38f + 0.55f * ld;
+                float pulseResA = xA * 0.30f + bodyA.Process(xA) * 1.15f + f2A.Process(xA) * 0.78f * bright + f3A.Process(xA) * 0.42f * ld;
+                float pulseResB = xB * 0.30f + bodyB.Process(xB) * 1.15f + f2B.Process(xB) * 0.78f * bright + f3B.Process(xB) * 0.42f * ld;
 
-                float sA = (float)System.Math.Tanh((harm * 0.62f + pulseResA * 0.48f) * drive);
-                float sB = (float)System.Math.Tanh((harm * 0.62f + pulseResB * 0.48f + 0.03f) * drive);
+                float sA = exhaustLpA.Process((float)System.Math.Tanh((harm * 0.56f + pulseResA * 0.56f) * drive));
+                float sB = exhaustLpB.Process((float)System.Math.Tanh((harm * 0.56f + pulseResB * 0.56f + 0.02f) * drive));
 
                 crackle *= crackDecay;
-                float pop = crackle > 0.01f ? crackBp.Process(Noise() * crackle) * 2.4f : 0f;
+                float pop = crackle > 0.01f ? crackBp.Process(Noise() * crackle) * 2.2f : 0f;
 
-                // V6 hybrid turbo spool + lift-off wastegate flutter + MGU-K electric whine
+                // Subtle V6 hybrid turbo spool + lift-off wastegate flutter + soft MGU-K whine
                 float hybridFx = 0f;
                 if (prof.turbo)
                 {
                     if (bst > 0.02f)
                     {
-                        turboPh += (2800f + 5700f * bst) / sr;
+                        turboPh += (2400f + 4600f * bst) / sr;
                         if (turboPh > 1f) turboPh -= 1f;
-                        hybridFx += Mathf.Sin(turboPh * twoPi) * 0.075f * bst;
+                        hybridFx += Mathf.Sin(turboPh * twoPi) * 0.028f * bst;
                     }
                     if (wg > 0.01f)
                     {
                         wgPh += 28f / sr;
                         if (wgPh > 1f) wgPh -= 1f;
                         float flutter = 0.5f + 0.5f * Mathf.Sin(wgPh * twoPi);
-                        hybridFx += Noise() * flutter * wg * 0.14f;
+                        hybridFx += Noise() * flutter * wg * 0.10f;
                     }
                     if (mk > 0.05f)
                     {
-                        mgukPh += (820f + 2300f * (fh / 650f)) / sr;
+                        mgukPh += (760f + 1900f * (fh / 650f)) / sr;
                         if (mgukPh > 1f) mgukPh -= 1f;
-                        hybridFx += Mathf.Sin(mgukPh * twoPi) * 0.032f * mk;
+                        hybridFx += Mathf.Sin(mgukPh * twoPi) * 0.015f * mk;
                     }
                 }
 
@@ -597,6 +631,8 @@ public class EngineAudio : MonoBehaviour
                 ea.rms = 0.06f;
                 ea.agc = 1f;
                 ea.pulseA = ea.pulseB = 0f;
+                ea.exhaustLpA.Reset();
+                ea.exhaustLpB.Reset();
 
                 (float idleRms, float idlePeak, bool idleFinite) = MeasureBuffer(ea, 4500f, 0.08f, 0.42f);
                 (float loadRms, float loadPeak, bool loadFinite) = MeasureBuffer(ea, 12000f, 1.0f, 0.72f);
@@ -666,12 +702,16 @@ public class EngineAudio : MonoBehaviour
         var rnd = new System.Random(5);
         float N() => (float)rnd.NextDouble() * 2f - 1f;
 
-        clunk = Make("ShiftClunk", sr, 0.075f, (t, n) =>
-            (Mathf.Sin(t * 2f * Mathf.PI * 175f) * 0.65f + N() * 0.35f) * Mathf.Exp(-t * 68f));
-        thud = Make("CrashThud", sr, 0.8f, (t, n) =>
-            Mathf.Sin(t * 2f * Mathf.PI * (72f - 32f * t)) * Mathf.Exp(-t * 7f) * 0.9f
-          + N() * Mathf.Exp(-t * 30f) * 0.6f
-          + N() * Mathf.Exp(-t * 6f) * 0.2f);
+        clunk = Make("ShiftClunk", sr, 0.065f, (t, n) =>
+            (Mathf.Sin(t * 2f * Mathf.PI * (140f - 55f * (t / 0.065f))) * 0.72f + N() * 0.30f * Mathf.Exp(-t * 95f)) * Mathf.Exp(-t * 48f));
+        float thudLp = 0f;
+        thud = Make("CrashThud", sr, 0.72f, (t, n) =>
+        {
+            thudLp += 0.10f * (N() - thudLp);
+            return Mathf.Sin(t * 2f * Mathf.PI * (62f - 36f * t)) * Mathf.Exp(-t * 6.5f) * 0.95f
+                 + thudLp * Mathf.Exp(-t * 14f) * 0.75f
+                 + N() * Mathf.Exp(-t * 42f) * 0.25f;
+        });
         radio = Make("RadioBeep", sr, 0.55f, (t, n) =>
         {
             float squelch = t < 0.06f ? N() * 0.6f * (1f - t / 0.06f) : 0f;
@@ -679,12 +719,20 @@ public class EngineAudio : MonoBehaviour
             float hiss = t > 0.3f ? N() * 0.08f * (1f - (t - 0.3f) / 0.25f) : 0f;
             return squelch + beep + hiss;
         });
+        float gunLp = 0f;
         gun = Make("WheelGun", sr, 2.2f, (t, n) =>
         {
-            bool on = (t < 0.3f) || (t > 1.6f && t < 1.9f);
-            if (!on) return 0f;
-            float rattle = Mathf.Sign(Mathf.Sin(t * 2f * Mathf.PI * 95f));
-            return (rattle * 0.25f + N() * 0.45f) * (0.7f + 0.3f * Mathf.Sin(t * 2f * Mathf.PI * 13f));
+            float Burst(float t0, float dur)
+            {
+                float u = t - t0;
+                if (u < 0f || u > dur) return 0f;
+                float env = Mathf.Min(1f, u / 0.025f) * Mathf.Min(1f, (dur - u) / 0.035f);
+                float hammer = 0.5f + 0.5f * Mathf.Sin(u * 2f * Mathf.PI * 36f);
+                float spinHz = 1220f + 260f * Mathf.Sin(u * 2f * Mathf.PI * 7f) + 180f * (u / dur);
+                gunLp += 0.28f * (N() - gunLp);
+                return (Mathf.Sin(u * 2f * Mathf.PI * spinHz) * (0.40f + 0.45f * hammer) + (N() - gunLp) * 0.42f * hammer) * env;
+            }
+            return (Burst(0.10f, 0.36f) + Burst(1.50f, 0.36f)) * 0.95f;
         });
     }
 
