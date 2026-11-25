@@ -85,6 +85,8 @@ public class F1Car : VehicleBase
     public override float ErsCharge => ersEnergy / ersCapacity;
     [System.NonSerialized] public float tyreGripScale = 1f;   // compound and wear, set by the race manager
     [System.NonSerialized] public float slipstreamFactor;      // 0..1 aero tow behind another car
+    [System.NonSerialized] public bool pitLimiterActive;
+    [System.NonSerialized] public float pitLimiterSpeed = 22.2f;
     public bool OnGravel { get; private set; }
     public bool OnGrass { get; private set; }
     public bool OnKerb { get; private set; }
@@ -361,6 +363,18 @@ public class F1Car : VehicleBase
         float vLong = Vector3.Dot(vel, fwd);
         float absV = Mathf.Abs(vLong);
         Speed = vLong;
+        if (pitLimiterActive && gear != -1)
+        {
+            if (vLong > pitLimiterSpeed)
+            {
+                throttle = 0f;
+                brake = Mathf.Max(brake, Mathf.Clamp01((vLong - pitLimiterSpeed) * 0.35f));
+            }
+            else if (vLong > pitLimiterSpeed - 0.8f)
+            {
+                throttle *= Mathf.Clamp01((pitLimiterSpeed - vLong) / 0.8f);
+            }
+        }
 
         // Continuous anti-tunnel lookahead: full pre-contact clamping in EditMode test harness, last-centimeter guard only in PlayMode
         bool lookaheadPreContact = false;
@@ -668,7 +682,8 @@ public class F1Car : VehicleBase
         {
             Vector3 vWall = rb.linearVelocity;
             float vInto = Vector3.Dot(vWall, lastWallNormal);
-            if (vInto < 0.6f && !reverse) vWall -= lastWallNormal * vInto;
+            float clampThresh = scriptSim ? 0.6f : 0f;
+            if (vInto < clampThresh && !reverse) vWall -= lastWallNormal * vInto;
             vWall.y = Mathf.Min(vWall.y, 0.01f);
             rb.linearVelocity = vWall;
         }
@@ -847,8 +862,14 @@ public class F1Car : VehicleBase
 
     void OnCollisionStay(Collision c)
     {
-        if (HandleBarrierCollision(c, out float dv, out Vector3 hitPoint) && !FrontWingLost && dv > wingBreakDeltaV && transform.InverseTransformPoint(hitPoint).z > 1.25f)
+        if (!HandleBarrierCollision(c, out float dv, out Vector3 hitPoint)) return;
+        if (!FrontWingLost && dv > wingBreakDeltaV && transform.InverseTransformPoint(hitPoint).z > 1.25f)
             BreakFrontWing();
+        if (sparks != null && rb.linearVelocity.magnitude > 12f && Random.value < 0.45f)
+        {
+            sparks.transform.position = hitPoint;
+            sparks.Emit(Random.Range(4, 12));
+        }
     }
 
     bool HandleBarrierCollision(Collision c, out float dvOut, out Vector3 hitPoint)
@@ -892,14 +913,15 @@ public class F1Car : VehicleBase
         float impactMag = Mathf.Max(closing, relNormal);
         Vector3 lever = hitPoint - rb.worldCenterOfMass;
         lever.y = 0f;
+        bool playModePhysics = Physics.simulationMode != SimulationMode.Script;
+        float absCos = Mathf.Abs(Vector3.Dot(transform.forward, n));
 
         if (vIn < 2.5f)
         {
             Vector3 vHoriz = new Vector3(v.x, 0f, v.z);
             Vector3 vTan = vHoriz - n * vIn;
-            bool playModePhysics = Physics.simulationMode != SimulationMode.Script;
-            float rebound = playModePhysics && closing > 3.5f ? Mathf.Min(closing * 0.14f, 1.6f) : 0f;
-            vTan *= playModePhysics ? Mathf.Lerp(0.95f, 0.68f, Mathf.Clamp01(impactMag / 32f))
+            float rebound = playModePhysics && closing > 2.0f ? Mathf.Clamp(closing * Mathf.Lerp(0.22f, 0.12f, absCos), 0.35f, 2.4f) : 0f;
+            vTan *= playModePhysics ? Mathf.Lerp(0.97f, 0.58f, Mathf.Clamp01(impactMag / 34f) * (0.35f + 0.65f * absCos))
                                     : Mathf.Lerp(0.96f, 0.82f, Mathf.Clamp01(impactMag / 25f));
             Vector3 newV = vTan + n * rebound;
             newV.y = Mathf.Min(v.y, 0.02f);
@@ -914,10 +936,13 @@ public class F1Car : VehicleBase
         Vector3 localAng = transform.InverseTransformDirection(rb.angularVelocity);
         localAng.x *= 0.15f;
         localAng.z *= 0.15f;
-        if (Physics.simulationMode != SimulationMode.Script && impactMag > 2.5f)
+        if (playModePhysics && impactMag > 2.0f)
         {
-            float yawImpulse = Mathf.Clamp(Vector3.Cross(lever, n).y * impactMag * 0.22f, -3.2f, 3.2f);
-            localAng.y = Mathf.Clamp(localAng.y + yawImpulse, -3.5f, 3.5f);
+            Vector3 flatFwd = new Vector3(transform.forward.x, 0f, transform.forward.z).normalized;
+            float sideSign = Vector3.Cross(flatFwd, n).y;
+            float alignYaw = (1f - absCos) * sideSign * Mathf.Clamp(impactMag * 0.08f, 0f, 1.8f);
+            float yawImpulse = Mathf.Clamp(Vector3.Cross(lever, n).y * impactMag * 0.22f + alignYaw, -3.4f, 3.4f);
+            localAng.y = Mathf.Clamp(localAng.y + yawImpulse, -3.8f, 3.8f);
         }
         else
         {
@@ -1043,6 +1068,7 @@ public class F1Car : VehicleBase
         lastPos = pos;
         Speed = 0f;
         steerAngle = 0f;
+        pitLimiterActive = false;
         gear = 1;
         foreach (var w in wheels) { w.compression = w.prevCompression = 0f; }
     }

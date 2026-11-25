@@ -85,16 +85,17 @@ public class PitBox : MonoBehaviour
             restLocalDir = bone.InverseTransformDirection(charRoot.TransformDirection(fallbackRootDir)).normalized;
         }
 
-        static void AimBone(Transform bone, Quaternion restRot, Vector3 restLocalDir, Vector3 desiredDirChar, Transform charRoot)
+        static void AimBone(Transform bone, Quaternion restRot, Vector3 restLocalDir, Vector3 desiredDirChar, Transform charRoot, float blendRate = 1f)
         {
             if (bone == null || bone.parent == null || desiredDirChar.sqrMagnitude < 1e-5f) return;
             Quaternion neutralWorld = bone.parent.rotation * restRot;
             Vector3 dFrom = neutralWorld * restLocalDir;
             Vector3 dTo = charRoot.TransformDirection(desiredDirChar.normalized);
-            bone.rotation = Quaternion.FromToRotation(dFrom, dTo) * neutralWorld;
+            Quaternion targetRot = Quaternion.FromToRotation(dFrom, dTo) * neutralWorld;
+            bone.rotation = blendRate >= 0.999f ? targetRot : Quaternion.Slerp(bone.rotation, targetRot, blendRate);
         }
 
-        public void ApplyPose(Transform charRoot, float kneel, float runCycle, float runWeight, Vector3 armTargetDirL, Vector3 armTargetDirR, float torsoLeanDeg, float headYawDeg = 0f, float headPitchDeg = 0f)
+        public void ApplyPose(Transform charRoot, float kneel, float runCycle, float runWeight, Vector3 armTargetDirL, Vector3 armTargetDirR, float torsoLeanDeg, float headYawDeg = 0f, float headPitchDeg = 0f, float blendRate = 1f)
         {
             if (!valid) return;
             kneel = Mathf.Clamp01(kneel);
@@ -103,9 +104,15 @@ public class PitBox : MonoBehaviour
             if (hips != null)
                 hips.localPosition = rHipsPos + hipsUpInParent * (-0.32f * kneel + Mathf.Abs(Mathf.Sin(runCycle)) * 0.04f * runWeight);
             if (torso != null && torso.parent != null)
-                torso.rotation = Quaternion.AngleAxis(torsoLeanDeg, charRoot.right) * (torso.parent.rotation * rTorso);
+            {
+                Quaternion torsoTarget = Quaternion.AngleAxis(torsoLeanDeg, charRoot.right) * (torso.parent.rotation * rTorso);
+                torso.rotation = blendRate >= 0.999f ? torsoTarget : Quaternion.Slerp(torso.rotation, torsoTarget, blendRate);
+            }
             if (head != null && head.parent != null)
-                head.rotation = Quaternion.AngleAxis(headYawDeg, charRoot.up) * Quaternion.AngleAxis(headPitchDeg, charRoot.right) * (head.parent.rotation * rHead);
+            {
+                Quaternion headTarget = Quaternion.AngleAxis(headYawDeg, charRoot.up) * Quaternion.AngleAxis(headPitchDeg, charRoot.right) * (head.parent.rotation * rHead);
+                head.rotation = blendRate >= 0.999f ? headTarget : Quaternion.Slerp(head.rotation, headTarget, blendRate);
+            }
 
             // Legs: blend between running stride, standing stance, and deep athletic kneel
             float strideL = Mathf.Sin(runCycle) * 0.65f * runWeight;
@@ -118,10 +125,10 @@ public class PitBox : MonoBehaviour
             Vector3 ulR = Vector3.Lerp(new Vector3(0.08f, -1f, strideR), kneeFwd + new Vector3(0.22f, 0f, 0f), kneel);
             Vector3 llR = Vector3.Lerp(new Vector3(0f, -1f, Mathf.Max(0f, -strideR) * 0.8f), shinBack, kneel);
 
-            AimBone(upperLegL, rULL, dirULL, ulL, charRoot);
-            AimBone(lowerLegL, rLLL, dirLLL, llL, charRoot);
-            AimBone(upperLegR, rULR, dirULR, ulR, charRoot);
-            AimBone(lowerLegR, rLLR, dirLLR, llR, charRoot);
+            AimBone(upperLegL, rULL, dirULL, ulL, charRoot, blendRate);
+            AimBone(lowerLegL, rLLL, dirLLL, llL, charRoot, blendRate);
+            AimBone(upperLegR, rULR, dirULR, ulR, charRoot, blendRate);
+            AimBone(lowerLegR, rLLR, dirLLR, llR, charRoot, blendRate);
 
             // Arms: exact world-space aiming with neutral parent continuation (no double rotation!)
             Vector3 runSwingL = new Vector3(-0.18f, -0.86f, -strideL * 0.7f);
@@ -132,10 +139,10 @@ public class PitBox : MonoBehaviour
             Vector3 foreL = Vector3.Lerp(dArmL, new Vector3(-0.08f, -0.18f, 0.98f), 0.55f * (1f - runWeight * (1f - kneel)));
             Vector3 foreR = Vector3.Lerp(dArmR, new Vector3(0.08f, -0.18f, 0.98f), 0.55f * (1f - runWeight * (1f - kneel)));
 
-            AimBone(upperArmL, rUAL, dirUAL, dArmL, charRoot);
-            AimBone(lowerArmL, rLAL, dirLAL, foreL, charRoot);
-            AimBone(upperArmR, rUAR, dirUAR, dArmR, charRoot);
-            AimBone(lowerArmR, rLAR, dirLAR, foreR, charRoot);
+            AimBone(upperArmL, rUAL, dirUAL, dArmL, charRoot, blendRate);
+            AimBone(lowerArmL, rLAL, dirLAL, foreL, charRoot, blendRate);
+            AimBone(upperArmR, rUAR, dirUAR, dArmR, charRoot, blendRate);
+            AimBone(lowerArmR, rLAR, dirLAR, foreR, charRoot, blendRate);
         }
     }
 
@@ -150,6 +157,7 @@ public class PitBox : MonoBehaviour
 
     readonly List<Member> crew = new List<Member>();
     readonly Transform[] oldTyre = new Transform[4], newTyre = new Transform[4];
+    readonly Quaternion[] tyreBaseRot = new Quaternion[4];
     Transform spareWingProp;
     bool spareWingActiveForStop;
 
@@ -337,6 +345,7 @@ public class PitBox : MonoBehaviour
 
             oldTyre[c] = Tyre(rubber, c < 2);
             newTyre[c] = Tyre(rubber, c < 2);
+            tyreBaseRot[c] = oldTyre[c].localRotation;
             newTyre[c].gameObject.SetActive(false);
             oldTyre[c].gameObject.SetActive(false);
         }
@@ -386,6 +395,7 @@ public class PitBox : MonoBehaviour
         Part(PrimitiveType.Cube, transform, new Vector3(-1.35f, 0.015f, 0), new Vector3(0.14f, 0.012f, 5.8f), paintP);
         Part(PrimitiveType.Cube, transform, new Vector3(1.35f, 0.015f, 0), new Vector3(0.14f, 0.012f, 5.8f), paintP);
         Part(PrimitiveType.Cube, transform, new Vector3(0, 0.014f, -2.85f), new Vector3(2.3f, 0.012f, 0.14f), paintS);
+        Part(PrimitiveType.Cube, transform, new Vector3(0f, 0.011f, 0f), new Vector3(2.2f, 0.01f, 4.8f), Mat(new Color(primary.r, primary.g, primary.b, 0.55f), 0.6f, primary * 0.35f));
 
         var propsPrefab = Resources.Load<GameObject>("F1Tyres/PitProps_Cluster");
         if (propsPrefab != null)
@@ -516,12 +526,12 @@ public class PitBox : MonoBehaviour
         float D = duration, t = phase == Phase.Service ? timer : phase == Phase.Released ? D + releaseTimer : 0f;
         bool active = phase == Phase.Service || phase == Phase.Released;
         float wavePhase = Application.isPlaying ? Time.time : timer;
+        float poseBlend = dt > 0.0005f && Application.isPlaying ? 1f - Mathf.Exp(-20f * dt) : 1f;
+        float posBlend = dt > 0.0005f && Application.isPlaying ? 1f - Mathf.Exp(-18f * dt) : 1f;
 
         foreach (var m in crew)
         {
-            Vector3 basePos = m.role == Role.Engineer || m.role == Role.Worker
-                ? Vector3.Lerp(m.home, m.ready, readyBlend)
-                : Vector3.Lerp(m.home, m.ready, readyBlend);
+            Vector3 basePos = Vector3.Lerp(m.home, m.ready, readyBlend);
             float inBlend = 0f;
             Vector3 pos = basePos;
 
@@ -532,8 +542,8 @@ public class PitBox : MonoBehaviour
                     case Role.FrontJack:  inBlend = S(-0.25f, 0.05f, t) * (1f - S(D + 0.05f, D + 0.5f, t)); break;
                     case Role.RearJack:   inBlend = S(0f, 0.28f, t) * (1f - S(D - 0.15f, D + 0.25f, t)); break;
                     case Role.Gunner:     inBlend = S(0f, 0.18f, t) * (1f - S(D - 0.10f, D + 0.25f, t)); break;
-                    case Role.TyreOff:    inBlend = S(0.05f, 0.30f, t) * (1f - S(0.75f, 1.05f, t)); break;
-                    case Role.TyreOn:     inBlend = S(0.55f, Mathf.Max(0.95f, D - 0.75f), t) * (1f - S(D - 0.25f, D + 0.10f, t)); break;
+                    case Role.TyreOff:    inBlend = S(0.02f, 0.26f, t) * (1f - S(0.60f, 1.05f, t)); break;
+                    case Role.TyreOn:     inBlend = S(0.42f, Mathf.Max(0.85f, D - 0.72f), t) * (1f - S(D - 0.22f, D + 0.12f, t)); break;
                     case Role.Stabiliser: inBlend = S(0f, 0.20f, t) * (1f - S(D - 0.10f, D + 0.30f, t)); break;
                     case Role.WingCrew:
                         if (spareWingActiveForStop)
@@ -544,17 +554,27 @@ public class PitBox : MonoBehaviour
                         inBlend = S(0f, 0.25f, t) * (1f - S(D, D + 0.4f, t));
                         break;
                 }
-                pos = Vector3.Lerp(basePos, m.work, inBlend);
-                if (m.role == Role.TyreOff) pos = Vector3.Lerp(pos, m.stack, S(0.75f, 1.15f, t) * (1f - S(D + 0.4f, D + 2.2f, t)));
+                if (m.role == Role.TyreOff)
+                {
+                    if (t < 0.62f) pos = Vector3.Lerp(basePos, m.work, S(0.02f, 0.30f, t));
+                    else if (t < D + 0.4f) pos = Vector3.Lerp(m.work, m.stack, S(0.62f, 1.22f, t));
+                    else pos = Vector3.Lerp(m.stack, basePos, S(D + 0.4f, D + 2.2f, t));
+                }
+                else
+                {
+                    pos = Vector3.Lerp(basePos, m.work, inBlend);
+                }
             }
 
             Vector3 prev = m.t.localPosition;
-            float moveSpeed = dt > 1e-4f ? (pos - prev).magnitude / dt : 0f;
+            Vector3 targetPos = new Vector3(pos.x, 0f, pos.z);
+            Vector3 nextPos = posBlend >= 0.999f ? targetPos : Vector3.Lerp(prev, targetPos, posBlend);
+            float moveSpeed = dt > 1e-4f ? (targetPos - prev).magnitude / dt : 0f;
             float runWeight = Mathf.Clamp01(moveSpeed / 2.2f);
             float runCycle = wavePhase * 11f + m.corner * 1.1f;
 
             // Keep feet on asphalt (y = 0); CrewRig handles hip crouch height cleanly!
-            m.t.localPosition = new Vector3(pos.x, 0f, pos.z);
+            m.t.localPosition = nextPos;
 
             Vector3 look;
             if (m.role == Role.Engineer || m.role == Role.Worker)
@@ -587,8 +607,13 @@ public class PitBox : MonoBehaviour
                         kneel = inBlend * 0.88f;
                         lean = Mathf.Lerp(4f, 18f, inBlend);
                         headPitch = Mathf.Lerp(0f, 16f, inBlend);
-                        armL = Vector3.Lerp(armL, new Vector3(-0.14f, -0.45f, 0.88f), inBlend);
-                        armR = Vector3.Lerp(armR, new Vector3(0.14f, -0.45f, 0.88f), inBlend);
+                        float midClear = active ? S(0.36f, 0.56f, t) * (1f - S(D - 0.68f, D - 0.44f, t)) : 0f;
+                        float gunDone = active ? S(D - 0.22f, D - 0.04f, t) * (1f - S(D + 0.08f, D + 0.30f, t)) : 0f;
+                        Vector3 gunWorkL = Vector3.Lerp(new Vector3(-0.14f, -0.45f, 0.88f), new Vector3(-0.18f, -0.32f, 0.68f), midClear);
+                        Vector3 gunWorkR = Vector3.Lerp(new Vector3(0.14f, -0.45f, 0.88f), new Vector3(0.18f, -0.32f, 0.68f), midClear);
+                        gunWorkR = Vector3.Lerp(gunWorkR, new Vector3(0.22f, 0.65f, 0.42f), gunDone);
+                        armL = Vector3.Lerp(armL, gunWorkL, inBlend);
+                        armR = Vector3.Lerp(armR, gunWorkR, inBlend);
                         break;
                     case Role.TyreOff:
                     case Role.TyreOn:
@@ -629,12 +654,12 @@ public class PitBox : MonoBehaviour
                         armR = phase == Phase.Ready ? new Vector3(0.35f, 0.55f + wave, 0.45f) : new Vector3(0.22f, -0.82f, 0.20f);
                         break;
                 }
-                m.rig.ApplyPose(m.t, kneel, runCycle, runWeight, armL, armR, lean, headYaw, headPitch);
+                m.rig.ApplyPose(m.t, kneel, runCycle, runWeight, armL, armR, lean, headYaw, headPitch, poseBlend);
             }
 
             if (m.role == Role.Gunner && m.prop != null)
             {
-                bool firing = active && ((t > 0.15f && t < 0.45f) || (t > D - 0.55f && t < D - 0.22f));
+                bool firing = active && ((t > 0.12f && t < 0.42f) || (t > D - 0.52f && t < D - 0.20f));
                 m.prop.localRotation = firing ? Quaternion.Euler(Mathf.Sin(wavePhase * 60f) * 5f, 0f, Mathf.Cos(wavePhase * 52f) * 5f) : Quaternion.identity;
             }
             if ((m.role == Role.FrontJack || m.role == Role.RearJack) && m.prop != null)
@@ -644,7 +669,7 @@ public class PitBox : MonoBehaviour
             }
         }
 
-        // Tyres & Spare Front Wing prop animations
+        // Tyres & Spare Front Wing prop animations (3-phase axial hub slide + arc lift)
         for (int c = 0; c < 4; c++)
         {
             var on = crew.Find(m => m.role == Role.TyreOn && m.corner == c);
@@ -652,22 +677,52 @@ public class PitBox : MonoBehaviour
             if (on == null || off == null) continue;
             Vector3 wheel = Wheels[c];
             float sx = Mathf.Sign(wheel.x);
+            Vector3 hubClear = wheel + new Vector3(sx * 0.32f, 0.02f, 0f);
+            Quaternion upright = tyreBaseRot[c];
+            Quaternion carryRot = Quaternion.Euler(14f, sx * 22f, 0f) * upright;
             if (active)
             {
-                bool showOld = t > 0.32f && t < D + 2.3f;
+                bool showOld = t > 0.30f && t < D + 2.3f;
                 if (oldTyre[c].gameObject.activeSelf != showOld) oldTyre[c].gameObject.SetActive(showOld);
-                Vector3 hand = off.t.localPosition + new Vector3(-sx * 0.40f, 0.52f, 0f);
-                oldTyre[c].localPosition = Vector3.Lerp(wheel + new Vector3(sx * 0.06f, 0f, 0f), hand, S(0.38f, 0.72f, t));
+                Vector3 hand = off.t.localPosition + new Vector3(-sx * 0.36f, 0.48f, 0.06f);
+                if (t < 0.52f)
+                {
+                    oldTyre[c].localPosition = Vector3.Lerp(wheel, hubClear, S(0.30f, 0.52f, t));
+                    oldTyre[c].localRotation = upright;
+                }
+                else
+                {
+                    float carryT = S(0.52f, 1.15f, t);
+                    Vector3 arcPos = Vector3.Lerp(hubClear, hand, carryT);
+                    arcPos.y += Mathf.Sin(carryT * Mathf.PI) * 0.10f;
+                    oldTyre[c].localPosition = arcPos;
+                    oldTyre[c].localRotation = Quaternion.Slerp(upright, carryRot, carryT);
+                }
 
-                bool showNew = t < D - 0.45f;
+                bool showNew = t < D - 0.38f;
                 if (newTyre[c].gameObject.activeSelf != showNew) newTyre[c].gameObject.SetActive(showNew);
-                Vector3 carry = on.t.localPosition + new Vector3(-sx * 0.40f, 0.52f, 0f);
-                newTyre[c].localPosition = Vector3.Lerp(carry, wheel, S(Mathf.Max(0.9f, D - 1.0f), Mathf.Max(1.2f, D - 0.55f), t));
+                Vector3 carry = on.t.localPosition + new Vector3(-sx * 0.36f, 0.48f, 0.06f);
+                float mountSplit = Mathf.Max(0.95f, D - 0.72f);
+                float mountDone = Mathf.Max(1.25f, D - 0.38f);
+                if (t < mountSplit)
+                {
+                    float bringT = S(0.45f, mountSplit, t);
+                    Vector3 bringPos = Vector3.Lerp(carry, hubClear, bringT);
+                    bringPos.y += Mathf.Sin(bringT * Mathf.PI) * 0.10f;
+                    newTyre[c].localPosition = bringPos;
+                    newTyre[c].localRotation = Quaternion.Slerp(carryRot, upright, bringT);
+                }
+                else
+                {
+                    newTyre[c].localPosition = Vector3.Lerp(hubClear, wheel, S(mountSplit, mountDone, t));
+                    newTyre[c].localRotation = upright;
+                }
             }
             else if (phase == Phase.Ready)
             {
                 if (!newTyre[c].gameObject.activeSelf) newTyre[c].gameObject.SetActive(true);
-                newTyre[c].localPosition = on.t.localPosition + new Vector3(-sx * 0.40f, 0.52f, 0f);
+                newTyre[c].localPosition = on.t.localPosition + new Vector3(-sx * 0.36f, 0.48f, 0.06f);
+                newTyre[c].localRotation = carryRot;
             }
             else if (newTyre[c].gameObject.activeSelf && readyBlend < 0.05f)
             {
