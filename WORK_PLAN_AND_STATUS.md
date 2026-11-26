@@ -81,6 +81,11 @@
 3. **PlayMode Crash Deflection (`F1Car.cs`):** Fixed `wallContactTimer` velocity clamping (`clampThresh = scriptSim ? 0.6f : 0f`) so cars never stick to barriers in PlayMode, added angle-aware inelastic rebound + wall-alignment yaw + lever spin, and continuous spark emission during wall slides.
 4. **De-Screeched Audio & Real F1 Clip Drop-In (`EngineAudio.cs`, `GameSession.cs`):** Switched default engine to V6 Turbo Hybrid (`engineSound = 3`), shifted synthesis registers down into warm `70–650 Hz` fundamentals with sub-harmonic `0.25x`, dropped `3x/4x/6x` harmonics and `1,050 Hz` sine tyre squeal / pure-sine turbo whistles, lowered cabinet LPF to `480–1,060 Hz`, and added automatic single-clip loader for `Resources/F1Audio/f1_engine` (or `engine`).
 
+### G. Playtest Video #2 Fixes: Monaco Pit Entry Colliders, Non-Stopping Wall Slides, Wide Cockpit FOV & Single Halo (2026-11-26)
+1. **Monaco Pit Entry Blocker Cleanup (`monaco gp.blend`, `Monaco_GP.fbx`):** Removed `771` `Col_Barriers` and `203` `Pit_Entry_Exit_Barriers` interior blocker faces overlapping the `Pit_Lane` footprint (`y = -560..-460` pit entry + `-460..-120` overhangs) while maintaining `BarrierContainment Monaco: missL=0/828 missR=0/828`.
+2. **Fixed Instant Wall-Stop Bug & PlayMode Wall Scraping (`F1Car.cs`, `CircuitBuilder.cs`):** Split `HandleBarrierCollision(c, isInitialImpact, ...)` so `OnCollisionStay` cancels only inward normal velocity with gentle `dt`-based scraping (`Mathf.Exp(-0.42f * dt)`) instead of multiplying tangential speed and yaw 100 times/sec; narrowed `pinnedHeadOnWall` and wheel normal projection in PlayMode (`absV < 4.0f`, `Dot < -0.75f` / `-0.60f`), and lowered `Barrier` physics friction to `0.04f`.
+3. **Single Halo, Wide Panoramic `70°–76°` Cockpit FOV & Rear Jack Clearance (`upgrade_cockpit_hd.py`, `ChaseCamera.cs`, `CircuitBuilder.cs`, `PitBox.cs`):** Removed the duplicate carbon Halo tube/V-gusset/pylon so `F1_Body` provides the single clean Halo in TV-Pod and Cockpit views; widened Cockpit FOV to `70°–76°` (`cockpitOffset = (0f, sw.y + 0.125f, sw.z - 0.365f)`, `cockpitPitch = 3.6f`); shifted `Role.RearJack` work position clear of the rear wing (`(gx * 0.85f, 0, -4.05f)`).
+
 ### D. Playtest Video Fixes Completed (2026-11-26 — All 16 Identified Issues Resolved)
 1. **Removed `Studio_Backdrop` from Car FBX (`F1_2026_Game.blend` & `CircuitBuilder.BuildCarPrefab()`):** Eliminated giant team-colored domes & travelling ice-blue floor planes across Main Menu and all 22 race cars (which had also caused flat light-grey polygons slicing across sloped corner crests).
 2. **Monaco Visual Polish (`monaco gp.blend` + `EnhanceMaterials`):** Deleted 100 stray `Track_Crew` canopy/roof islands (`1618` faces), confirmed zero `Yellow_Line` highway strips on `Monaco_Road_Markings` (the yellow track dashes were Unity's runtime `BrakingMarkers` assist), textured `Tunnel_Wall`/`Tunnel_Ceiling`/`Monaco_White` with concrete albedo grain, and enabled realtime warm emission on `Tunnel_Light`.
@@ -106,3 +111,52 @@
 - [ ] **User Live Playtest Feedback (Post-Fix Pass):** Playtest updated Monaco (lights-out grid, Mirabeau/Fairmont Hairpin `30°` lock, Tunnel lighting, pit entry/service/exit, HUD edges/gaps/nameplates, and audio) plus Baku/Monza/Spa/Suzuka.
 - [ ] **Git Commit & Push (User Action):** `git.exe` is not on system `PATH`; commit and push updated assets/scripts in `D:\my Gits\game-dev-\game-dev-` via GitHub Desktop or VS Code Source Control.
 - [ ] **Optional Future Polish (If Requested After Playtest):** Wet-weather rain particles/spray tied to `Inter`/`Wet` compounds, race-start pit-grid engineers & blowers (`media_1795209529538_cc657427.jpg`), or custom team steering-wheel LED/badge variants.
+
+### H. Claude Code inspection & fixes (2026-11-26)
+- Inspection: 0 compile errors; F1PhysicsTest all PASS; auto-drive laps complete on all 5 Final circuits (no falls); menu + races run with 0 runtime errors.
+- Performance: new `RaceOptimizer` (called in `RaceManager.Start`) tightens rival-car LODs (0.42/0.13/0.005), hides rival cockpit interiors/steering wheels/mirrors, and turns off shadows on rival small parts, pit crews and small scenery. Monza grid: 5.9M -> 3.3M tris, render 12.4 -> 5.6 ms. Draw calls still ~2,100 (circuit meshes; would need mesh combining).
+- `PitBox`: no per-frame lambda lookups; idle crews > 160 m from the camera are hidden and not animated.
+- Pit: stopping up to 15 m past the box still docks (crew pull back); radio warning when the box is missed.
+- Audio: recorded engine loops in `Resources/F1Audio/<V10|V8|V12|V6Turbo>/engine_{idle,low,mid,high}.wav` (pitch-flattened from the user's comparison video, picked by Settings > Engine sound); `F1Audio/radio.mp3` replaces the synthesised radio beep. Synth remains the fallback.
+- Tools: `Tools/XPARROW/Debug/Analyse Scene Weight`, `Log Performance`, `Check File Sizes for GitHub` (also run by Save All).
+- Removed old duplicate scenes `Assets/Scenes/Circuit *.unity` + `Main Menu.unity` (Recycle Bin).
+
+### I. IN PROGRESS - paused 2026-11-26 (user request: "fix everything")
+Done this session (not yet re-tested in Unity after the folder move):
+- Scripts organised: Race/Scripts/{Core,Car,AI,Pit,Audio,UI}, Race/Editor/{Builders,Tests,Tools} (moved with .meta, GUIDs kept).
+- Removed (Recycle Bin): old Assets/Scenes/Circuit *.unity + Main Menu.unity, Generated/Sky.mat, Generated/Verge_Grass.mat, Resources/F1UI/Hero.png.
+- Resources/F1UI images downscaled to 1024 px (60.7 MB -> 10.2 MB, importer already capped at 1024).
+- New: Race/Editor/Tests/TrackAudit.cs (Tools/XPARROW/Debug/Audit Tracks (lines + pits)) - NOT RUN YET.
+- Real crash SFX downloaded (user-approved, Epidemic Sound; check licence before publishing):
+  Resources/F1Audio/Crash/{crash_heavy_1,crash_heavy_2,crash_heavy_3,crash_light,scrape_loop,gravel_loop}.mp3 - NOT WIRED IN YET.
+
+TODO next (in order):
+1. Refresh Unity, confirm 0 compile errors after the move; run Audit Tracks -> fix any circuit missing edge/lane lines
+   (if missing, generate thin white edge-line strips at +/-halfWidth from RaceTrack at runtime - no file growth).
+2. Verify pits on all 5 circuits (boxes, profile, entry/exit) + a pit stop in play mode.
+3. Wire crash SFX in EngineAudio: crash_light (<8 m/s impact), crash_heavy_* (random, >8 m/s, volume by strength),
+   scrape_loop while sliding along a barrier (F1Car wall contact), gravel_loop while OnGravel.
+4. Runtime detail (no asset growth): braking boards 300/200/100 m before big corners, tyre smoke on slip,
+   dust on gravel/grass, carbon debris burst on heavy impacts.
+5. Physics: damage model (suspension damage -> pull + grip loss after heavy side impacts), better crash response;
+   re-run F1PhysicsTest + Auto-drive laps on all 5 circuits.
+6. Test races, Save All, update this file.
+
+### J. Added tasks (2026-11-26, user) - do when the user says "continue"
+7. Monaco tunnel: improve the entry (geometry/lighting/transition detail at the tunnel mouth).
+8. Crowd noise: louder, positional crowd/cheer when passing grandstands and spectator areas (3D audio sources at stands).
+9. Blender -> Unity fidelity: check every model (car, crew, props, 5 circuits) matches its Blender source (materials, textures, scale, missing parts).
+10. Car model: if the 2026 car has defects, replace with a better non-copyrighted model (CC0/CC-BY, e.g. Sketchfab/Poly Haven/Poly Pizza) - ASK the user before each download (name, source, licence, size).
+11. Main menu: visual upgrade + clearer, better organised layout.
+12. Size & optimisation: remove unnecessary files/code, shrink the project and build as much as possible without changing the game
+    (unused code paths, duplicate textures, oversized textures, .fbm extracted folders, debug-only tools out of builds, texture compression, mesh compression, audio compression).
+13. Team liveries "exactly" like the real teams: NOTE - real sponsor logos/branding are trademarks; match real team colour schemes and layouts
+    as closely as possible but keep logos/sponsor names original (project rule: copyright-safe XPARROW branding). Confirm with the user.
+    Clarified by user (2026-11-26): only ONE car model is used, textured per team. If the current car model is fine, keep it and don't ask.
+    Only if it has real problems: propose a free non-copyrighted replacement (ask once with name/source/licence/size before downloading).
+    File locations: any 3D model / Blender source -> E:\My Game assets\f1 (next to the existing Blender models);
+    game changes (imported FBX, textures, materials, scripts, scenes) -> the Unity project D:\my Gits\game-dev-\game-dev-.
+14. Scenes look tilted in the editor (hard to edit by hand): the circuit FBX objects import with a -90 deg X axis rotation that the builder
+    cancels with a +90 deg rotation on the circuit root. Fix at the source so every circuit root and child has a clean, upright transform
+    (identity rotation): re-export/import with the correct axis conversion (Blender export axes or Unity importer "Bake Axis Conversion"),
+    rebuild the Final scenes, and verify nothing moves (track data, colliders, pit boxes, grid, lines).
