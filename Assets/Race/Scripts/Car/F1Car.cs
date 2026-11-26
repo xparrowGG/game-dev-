@@ -90,6 +90,7 @@ public class F1Car : VehicleBase
     public bool OnGravel { get; private set; }
     public bool OnGrass { get; private set; }
     public bool OnKerb { get; private set; }
+    public bool WallContact => wallContactTimer > 0f;          // touching / sliding along a barrier (for scrape audio, sparks)
     public float TyreTemp { get; private set; } = 90f;
     // DRS: the race manager says when the car is in an activation zone; the driver opens the flap (F / Y)
     [System.NonSerialized] public bool drsAvailable, drsAuto;
@@ -105,6 +106,7 @@ public class F1Car : VehicleBase
 
     class Wheel
     {
+        public float damage;            // 0 = fine .. 1 = badly bent suspension (less grip, steering pull)
         public string name;
         public Transform steer;         // front upright / brake hub pivot (null on rear)
         public Transform visual;        // spinning tyre mesh
@@ -512,6 +514,8 @@ public class F1Car : VehicleBase
         float lockAngle = steeringAssist ? Mathf.Min(maxSteerAngle, usable) : maxSteerAngle;
         float shapedSteer = externalInput ? Mathf.Clamp(steerIn, -1f, 1f) : Mathf.Sign(steerIn) * Mathf.Pow(Mathf.Abs(steerIn), 1.30f);
         float targetSteer = shapedSteer * lockAngle;
+        // Bent front suspension pulls the car towards the damaged side
+        if (wheels[0] != null && wheels[1] != null) targetSteer += (wheels[1].damage - wheels[0].damage) * 3.5f;
         if (steeringAssist && !externalInput && (wheels[2].grounded || wheels[3].grounded) && vLong > 10f)
         {
             float vLat = Vector3.Dot(vel, transform.right);
@@ -618,6 +622,7 @@ public class F1Car : VehicleBase
             if (w.front && brakeInput > 0.1f) mu *= 1f + 0.10f * Mathf.Clamp01(brakeInput);
             if (!w.front && gear > 0 && gear <= 3 && driveInput > 0.6f) mu *= 0.96f;
             if (w.front && FrontWingLost) mu *= 0.9f;
+            if (w.damage > 0f) mu *= 1f - 0.35f * w.damage;
             // Gravel trap: little grip and a lot of drag
             var surface = w.hit.collider.sharedMaterial;
             bool gravel = surface != null && surface.name.StartsWith("Gravel");
@@ -1020,6 +1025,26 @@ public class F1Car : VehicleBase
             sparks.Emit(Mathf.RoundToInt(Mathf.Clamp(dv * 10f, 8f, 150f)));
         }
         if (dv > wingBreakDeltaV && transform.InverseTransformPoint(point).z > 1.25f) BreakFrontWing();
+        // Hard hits bend the suspension at the corner that took the impact
+        if (dv > 7f)
+        {
+            Vector3 lp = transform.InverseTransformPoint(point);
+            int idx = (lp.z >= 0f ? 0 : 2) + (lp.x < 0f ? 0 : 1);
+            if (idx < wheels.Length && wheels[idx] != null) wheels[idx].damage = Mathf.Min(1f, wheels[idx].damage + (dv - 7f) / 14f);
+        }
+        if (fx == null) fx = GetComponent<CarFX>();
+        if (fx != null && dv > 5f) fx.Debris(point, Mathf.RoundToInt(Mathf.Clamp(dv * 2.5f, 6f, 60f)));
+    }
+    CarFX fx;
+
+    public float SuspensionDamage { get { float m = 0f; foreach (var w in wheels) if (w != null) m = Mathf.Max(m, w.damage); return m; } }
+    public bool NeedsRepair => FrontWingLost || SuspensionDamage > 0.05f;
+
+    // Pit crew fixes everything: wing and suspension
+    public void RepairDamage()
+    {
+        RepairFrontWing();
+        foreach (var w in wheels) if (w != null) w.damage = 0f;
     }
 
     // Car-to-car contact (rival cars are triggers): velocity-based separation + inelastic momentum sharing (no jitter/teleport)
@@ -1114,7 +1139,7 @@ public class F1Car : VehicleBase
         steerAngle = 0f;
         pitLimiterActive = false;
         gear = 1;
-        foreach (var w in wheels) { w.compression = w.prevCompression = 0f; }
+        foreach (var w in wheels) { w.compression = w.prevCompression = 0f; w.damage = 0f; }
     }
 
     public void SetPerformance(float powerScale, float aeroScale, float gripScale)

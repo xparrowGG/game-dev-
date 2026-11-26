@@ -9,9 +9,6 @@ EditorBuildSettings:
     path: Assets/Scenes/Final/Final Main Menu.unity
     guid: 973d51d5ed5740b45b133c608a6c4c72
   - enabled: 1
-    path: Assets/Scenes/Final/Final Circuit Monaco.unity
-    guid: 048ef3f5382bfe3468676f775036911a
-  - enabled: 1
     path: Assets/Scenes/Final/Final Circuit Baku.unity
     guid: f2e914e7dda1d2949b58f1d62f160d8d
   - enabled: 1
@@ -23,6 +20,9 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/Scenes/Final/Final Circuit Suzuka.unity
     guid: e2cdbe262b11f624c80ac63203b1528d
+  - enabled: 1
+    path: Assets/Scenes/Final/Final Circuit Monaco.unity
+    guid: 048ef3f5382bfe3468676f775036911a
   m_configObjects:
     com.unity.dt.app-ui: {fileID: 11400000, guid: 1b1c20d82303e4b5781c3ef50ac1449f, type: 2}
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}

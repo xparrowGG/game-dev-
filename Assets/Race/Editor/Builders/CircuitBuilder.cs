@@ -1656,21 +1656,6 @@ public static class CircuitBuilder
         EditorApplication.isPlaying = true;
     }
 
-    [MenuItem("Tools/XPARROW/4 Remove Old Procedural Monaco")]
-    public static void RemoveOldMonaco()
-    {
-        var removed = new List<string>();
-        foreach (var guid in AssetDatabase.FindAssets("\"Monaco GP\" t:Scene"))
-        {
-            string p = AssetDatabase.GUIDToAssetPath(guid);
-            if (Path.GetFileNameWithoutExtension(p) == "Monaco GP" && AssetDatabase.MoveAssetToTrash(p)) removed.Add(p);
-        }
-        foreach (var folder in new[] { "Assets/Race/Meshes/Monaco", "Assets/Race/Generated/Meshes/Monaco" })
-            if (AssetDatabase.IsValidFolder(folder) && AssetDatabase.MoveAssetToTrash(folder)) removed.Add(folder);
-        SetBuildScenes();
-        Debug.Log("Removed (moved to the Recycle Bin): " + (removed.Count > 0 ? string.Join(", ", removed) : "nothing found"));
-    }
-
     public static void CreateSparks(GameObject car)
     {
         var go = new GameObject("Sparks");

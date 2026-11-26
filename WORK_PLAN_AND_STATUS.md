@@ -160,3 +160,24 @@ TODO next (in order):
     cancels with a +90 deg rotation on the circuit root. Fix at the source so every circuit root and child has a clean, upright transform
     (identity rotation): re-export/import with the correct axis conversion (Blender export axes or Unity importer "Bake Axis Conversion"),
     rebuild the Final scenes, and verify nothing moves (track data, colliders, pit boxes, grid, lines).
+
+### K. Progress 2026-11-26 (continue pass)
+DONE + verified: compile after folder move; track lines present on all 5 circuits (edge lines, start/grid, pit lines, Monaco street liners);
+pits PASS on all 5 (11/11 boxes, Baku+Monaco full stops barrierHits=0); real crash SFX wired (crash_light <14 strength, random crash_heavy_*,
+scrape_loop on WallContact, gravel_loop on OnGravel); CrowdEmitters (positional crowd at grandstands, surges as the player passes);
+CarFX (tyre smoke, gravel/grass dust, carbon debris); TrackDetails (300/200/100 m braking boards, Monza 4 zones/12 boards);
+suspension damage model (per-wheel grip loss + steering pull, repaired in the pit, +1.6 s service); TunnelDetails (Monaco portals,
+concrete facade, tunnel lights, eye adaptation); UPRIGHT SCENES: F1AssetImport.OnPostprocessModel bakes each circuit node's rotation into
+its mesh -> every circuit object now has identity rotation; all 5 Final scenes rebuilt and re-verified (barriers 0 misses, pits PASS,
+auto-drive laps identical to before). Backup of pre-rebuild scenes: scratchpad scene_backup_20261126_1819.
+REMAINING: model/texture fidelity + liveries (task 9/10/13), menu redesign (11), shrink/optimise (12).
+
+### L. Completed 2026-11-26 (all listed tasks)
+- Model/texture fidelity: MaterialAudit (Tools/XPARROW/Debug) on all 6 scenes: 0 error shaders, 0 missing textures. Monaco procedural Blender
+  colours (trees/palms/cypress/trunks were white) restored via F1Assets/Tracks/Monaco/Monaco.blender_colors.json applied at import.
+  Car model kept (fine); liveries are the pack's own 4K team textures.
+- Menu redesign: top nav PLAY / GARAGE / OPTIONS with sub-tabs, home page hero cards + circuit strip with records, info card,
+  smooth panel gradient, ESC = back. Verified visually in Play mode.
+- Optimisation: texture streaming (mip streaming on all game textures, budget 1024 MB), prebaked collision meshes, Vorbis audio,
+  removed unused car .fbm textures, obsolete "Remove Old Procedural Monaco" tool and one-off probes.
+- Not changed on purpose: circuit meshes stay Read/Write (the circuit builder reads them); track textures not downscaled (would change visuals).

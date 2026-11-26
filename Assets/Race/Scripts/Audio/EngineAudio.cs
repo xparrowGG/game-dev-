@@ -54,6 +54,10 @@ public class EngineAudio : MonoBehaviour
     Rigidbody carRb;
     bool hasCustomEngineLoops;
     static AudioClip clunk, thud, gun, radio, customKerbClip;
+    // Recorded crash set (Resources/F1Audio/Crash): light bump, heavy hits (random), wall-scrape and gravel loops
+    static AudioClip crashLight, scrapeClip, gravelClip;
+    static AudioClip[] crashHeavy;
+    AudioSource scrapeSrc, gravelSrc;
     static bool optionalClipsChecked;
     int lastGear;
     float lastImpact = -1f, smoothThrottle = 0.2f, smoothRpm = 4800f, prevSmoothThrottle = 0.2f;
@@ -212,7 +216,15 @@ public class EngineAudio : MonoBehaviour
             if (crash != null) thud = crash;
             var radioClip = Resources.Load<AudioClip>("F1Audio/radio");
             if (radioClip != null) radio = radioClip;
+            crashLight = Resources.Load<AudioClip>("F1Audio/Crash/crash_light");
+            scrapeClip = Resources.Load<AudioClip>("F1Audio/Crash/scrape_loop");
+            gravelClip = Resources.Load<AudioClip>("F1Audio/Crash/gravel_loop");
+            var heavy = new System.Collections.Generic.List<AudioClip>();
+            for (int i = 1; i <= 6; i++) { var c = Resources.Load<AudioClip>("F1Audio/Crash/crash_heavy_" + i); if (c != null) heavy.Add(c); }
+            crashHeavy = heavy.ToArray();
         }
+        if (scrapeClip != null && scrapeSrc == null) scrapeSrc = MakeLoop("SFX_Scrape", scrapeClip);
+        if (gravelClip != null && gravelSrc == null) gravelSrc = MakeLoop("SFX_Gravel", gravelClip);
         // Recorded loops for the engine chosen in Settings (F1Audio/V10, V8, V12, V6Turbo); else the shared set
         string engineDir = "F1Audio/" + EngineNames[Mathf.Clamp(GameSession.Settings.engineSound, 0, EngineNames.Length - 1)].Replace(" ", "") + "/";
         AudioClip Load(string clipName) => Resources.Load<AudioClip>(engineDir + clipName) ?? Resources.Load<AudioClip>("F1Audio/" + clipName);
@@ -338,9 +350,33 @@ public class EngineAudio : MonoBehaviour
             }
             lastGear = car.Gear;
 
-            if (car.LastImpactTime > lastImpact + 0.2f && car.LastImpactStrength > 4f && thud != null && oneShots != null)
-                oneShots.PlayOneShot(thud, Mathf.Clamp01(car.LastImpactStrength / 24f) * 1.4f * volume + 0.2f);
+            if (car.LastImpactTime > lastImpact + 0.2f && car.LastImpactStrength > 4f && oneShots != null)
+            {
+                // Real recordings: a light bump for small knocks, a random heavy crash for big hits; synth thud as fallback
+                float s = car.LastImpactStrength;
+                AudioClip hit = s < 14f ? (crashLight != null ? crashLight : thud)
+                              : (crashHeavy != null && crashHeavy.Length > 0 ? crashHeavy[Random.Range(0, crashHeavy.Length)] : thud);
+                if (hit != null) oneShots.PlayOneShot(hit, Mathf.Clamp01(0.25f + s / 30f) * 1.2f * volume + 0.15f);
+            }
             lastImpact = Mathf.Max(lastImpact, car.LastImpactTime);
+
+            // Loops: metal scrape while sliding along a barrier, stones while in a gravel trap
+            if (car is F1Car fc)
+            {
+                float spd = Mathf.Abs(car.Speed);
+                if (scrapeSrc != null)
+                {
+                    float target = fc.WallContact && spd > 2f ? Mathf.Clamp01(spd / 35f) * 0.9f * volume : 0f;
+                    scrapeSrc.volume = Mathf.MoveTowards(scrapeSrc.volume, target, dt * (target > scrapeSrc.volume ? 12f : 4f));
+                    scrapeSrc.pitch = 0.8f + Mathf.Clamp01(spd / 60f) * 0.5f;
+                }
+                if (gravelSrc != null)
+                {
+                    float target = fc.OnGravel && spd > 1.5f ? Mathf.Clamp01(spd / 30f) * 0.75f * volume : 0f;
+                    gravelSrc.volume = Mathf.MoveTowards(gravelSrc.volume, target, dt * 6f);
+                    gravelSrc.pitch = 0.85f + Mathf.Clamp01(spd / 50f) * 0.4f;
+                }
+            }
         }
 
         if (shiftCutTimer > 0f) shiftCutTimer = Mathf.Max(0f, shiftCutTimer - dt);

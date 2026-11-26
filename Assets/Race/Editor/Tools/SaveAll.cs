@@ -19,6 +19,14 @@ public static class SaveAll
         CheckGitHubSizes();
     }
 
+    // Throw away unsaved changes in the open scene (reload it from disk)
+    [MenuItem("Tools/XPARROW/Revert Open Scene (discard changes)")]
+    public static void RevertOpenScene()
+    {
+        string p = EditorSceneManager.GetActiveScene().path;
+        if (!string.IsNullOrEmpty(p)) EditorSceneManager.OpenScene(p, OpenSceneMode.Single);
+    }
+
     [MenuItem("Tools/XPARROW/Check File Sizes for GitHub")]
     public static void CheckGitHubSizes()
     {

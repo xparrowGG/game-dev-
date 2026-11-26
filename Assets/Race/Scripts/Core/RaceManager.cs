@@ -173,6 +173,10 @@ public class RaceManager : MonoBehaviour
         }
         if (HasPitLane && (pitBoxes == null || pitBoxes.Length == 0)) BuildPitCrews();
         RaceOptimizer.Apply(this);
+        CrowdEmitters.Build(player != null ? player.transform : null);
+        TrackDetails.Build(track);
+        TunnelDetails.Build(track);
+        if (player is F1Car && player.GetComponent<CarFX>() == null) player.gameObject.AddComponent<CarFX>();
         testAutoPit = false;
         player.inputEnabled = false;
         player.onRespawnRequested = RespawnPlayer;
@@ -1116,7 +1120,7 @@ public class RaceManager : MonoBehaviour
                         pitTimer = 0f;
                         pitNeedWingRepair = (player is F1Car f1w) && f1w.FrontWingLost;
                         pitWingRepaired = false;
-                        serviceTime = 2.3f + Random.value * 0.5f + (pitNeedWingRepair ? 2.4f : 0f);
+                        serviceTime = 2.3f + Random.value * 0.5f + (pitNeedWingRepair ? 2.4f : 0f) + ((player is F1Car sd) && sd.SuspensionDamage > 0.05f ? 1.6f : 0f);
                         if (box != null) { box.SetCompounds(playerCompound, playerNext); box.Begin(serviceTime, pitNeedWingRepair); }
                         if (playerAudio != null) playerAudio.PlayPitGun();
                     }
@@ -1132,7 +1136,7 @@ public class RaceManager : MonoBehaviour
                     pitTimer = 0f;
                     pitNeedWingRepair = (player is F1Car f1w) && f1w.FrontWingLost;
                     pitWingRepaired = false;
-                    serviceTime = 2.3f + Random.value * 0.5f + (pitNeedWingRepair ? 2.4f : 0f);
+                    serviceTime = 2.3f + Random.value * 0.5f + (pitNeedWingRepair ? 2.4f : 0f) + ((player is F1Car sd2) && sd2.SuspensionDamage > 0.05f ? 1.6f : 0f);
                     if (box != null) { box.SetCompounds(playerCompound, playerNext); box.Begin(serviceTime, pitNeedWingRepair); }
                     if (playerAudio != null) playerAudio.PlayPitGun();
                 }
@@ -1156,7 +1160,7 @@ public class RaceManager : MonoBehaviour
                 if (pitNeedWingRepair && !pitWingRepaired && pitTimer >= serviceTime - 0.65f)
                 {
                     pitWingRepaired = true;
-                    if (player is F1Car cf1) cf1.RepairFrontWing();
+                    if (player is F1Car cf1) cf1.RepairDamage();
                 }
                 if (pitTimer >= serviceTime)
                 {

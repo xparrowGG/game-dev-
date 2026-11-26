@@ -155,24 +155,56 @@ public class MainMenu : MonoBehaviour
 
     // ---------- Layout ----------
 
+    // Menu groups (top navigation): PLAY / GARAGE / OPTIONS
+    static readonly string[] GroupNames = { "PLAY", "GARAGE", "OPTIONS" };
+    static readonly Color[] GroupColors = { new Color(0.92f, 0.1f, 0.14f), new Color(0.1f, 0.78f, 0.82f), new Color(0.3f, 0.85f, 0.45f) };
+
+    int GroupOf(Page p)
+    {
+        switch (p)
+        {
+            case Page.Garage: case Page.Records: return 1;
+            case Page.Settings: case Page.Controls: case Page.Credits: return 2;
+            default: return 0;
+        }
+    }
+
+    void Go(Page p) { if (page == Page.Settings) GameSession.SaveSettings(); page = p; scroll = Vector2.zero; confirmDelete = false; }
+
     void OnGUI()
     {
         float s = Screen.height / 1080f;
         if (!Mathf.Approximately(s, styleScale)) BuildStyles(s);
+        if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.Escape && page != Page.Main) { Go(Page.Main); Event.current.Use(); }
 
-        float pw = 760 * s;
+        // Side panel with a soft fade into the showroom, and a slow animated light sweep
+        float pw = 780 * s;
         Fill(new Rect(0, 0, pw, Screen.height), Panel);
-        for (int i = 0; i < 40; i++)
-            Fill(new Rect(pw + i * 4 * s, 0, 4 * s, Screen.height), new Color(Panel.r, Panel.g, Panel.b, Panel.a * (1f - i / 40f)));
-        // Title with a racing-stripe accent
-        float pulse = 0.75f + 0.25f * Mathf.Sin(Time.time * 2f);
-        Fill(new Rect(56 * s, 58 * s, 10 * s, 96 * s), new Color(Accent.r, Accent.g, Accent.b, pulse));
-        Fill(new Rect(70 * s, 58 * s, 4 * s, 96 * s), new Color(1, 1, 1, 0.8f));
-        GUI.Label(new Rect(90 * s, 50 * s, 900 * s, 80 * s), GameSession.GameTitle, title);
-        GUI.Label(new Rect(94 * s, 124 * s, 900 * s, 30 * s), GameSession.Tracks.Length + " CIRCUITS  ·  " + GameSession.Teams.Length + " TEAMS  ·  " + GameSession.Teams.Length * 2 + " DRIVERS  ·  2026 CARS", subtitle);
+        // Smooth fade into the showroom (one gradient texture, no banding)
+        if (fadeTex == null)
+        {
+            fadeTex = new Texture2D(64, 1, TextureFormat.RGBA32, false) { wrapMode = TextureWrapMode.Clamp, hideFlags = HideFlags.DontSave };
+            for (int i = 0; i < 64; i++) { float k = 1f - i / 63f; fadeTex.SetPixel(i, 0, new Color(Panel.r, Panel.g, Panel.b, Panel.a * k * k)); }
+            fadeTex.Apply();
+        }
+        GUI.DrawTexture(new Rect(pw, 0, 220 * s, Screen.height), fadeTex, ScaleMode.StretchToFill, true);
+        float sweep = Mathf.Repeat(Time.time * 0.12f, 1.4f) - 0.2f;
+        Fill(new Rect(0, Screen.height * sweep, pw, 2 * s), new Color(1, 1, 1, 0.035f));
+        Color gc = GroupColors[GroupOf(page)];
+        Fill(new Rect(0, 0, 6 * s, Screen.height), new Color(gc.r, gc.g, gc.b, 0.85f));
 
-        float x = 84 * s, w = 600 * s, top = 190 * s;
-        Rect area = new Rect(x, top, w + 24 * s, Screen.height - top - 60 * s);
+        // Title
+        float pulse = 0.75f + 0.25f * Mathf.Sin(Time.time * 2f);
+        Fill(new Rect(56 * s, 44 * s, 10 * s, 78 * s), new Color(Accent.r, Accent.g, Accent.b, pulse));
+        Fill(new Rect(70 * s, 44 * s, 4 * s, 78 * s), new Color(1, 1, 1, 0.8f));
+        GUI.Label(new Rect(90 * s, 34 * s, 900 * s, 70 * s), GameSession.GameTitle, new GUIStyle(title) { fontSize = Mathf.RoundToInt(54 * s) });
+        GUI.Label(new Rect(94 * s, 96 * s, 900 * s, 28 * s), GameSession.Tracks.Length + " CIRCUITS  ·  " + GameSession.Teams.Length + " TEAMS  ·  " + GameSession.Teams.Length * 2 + " DRIVERS  ·  2026 CARS", subtitle);
+
+        // Top navigation: group tabs + the pages of the active group
+        DrawNav(84 * s, 140 * s, 620 * s, s);
+
+        float x = 84 * s, w = 600 * s, top = 250 * s;
+        Rect area = new Rect(x, top, w + 24 * s, Screen.height - top - 70 * s);
         switch (page)
         {
             case Page.Main: DrawMain(x, top, w, s); break;
@@ -186,7 +218,67 @@ public class MainMenu : MonoBehaviour
             case Page.Settings: Scrolled(area, s, 1500f, (yy) => DrawSettings(0, yy, w, s)); break;
             case Page.Controls: DrawControls(x, top, w, s); break;
         }
-        GUI.Label(new Rect(84 * s, Screen.height - 46 * s, 900 * s, 30 * s), "Team names for identification only, not affiliated with Formula 1 or any team.  " + MapCredit.Text, small);
+
+        // Footer: key hints + legal line
+        Fill(new Rect(0, Screen.height - 58 * s, pw, 1 * s), new Color(1, 1, 1, 0.08f));
+        GUI.Label(new Rect(84 * s, Screen.height - 54 * s, 600 * s, 24 * s), page == Page.Main ? "Mouse to choose  ·  pick a mode to start" : "ESC  back to home  ·  mouse to choose", small);
+        GUI.Label(new Rect(84 * s, Screen.height - 32 * s, 900 * s, 24 * s), "Team names for identification only, not affiliated with Formula 1 or any team.  " + MapCredit.Text, new GUIStyle(small) { fontSize = Mathf.RoundToInt(12 * s) });
+
+        // Right side: what's selected right now (team on the turntable, next event)
+        DrawInfoCard(s);
+    }
+
+    void DrawNav(float x, float y, float w, float s)
+    {
+        int g = GroupOf(page);
+        float gw = (w - 2 * 8 * s) / 3f;
+        for (int i = 0; i < 3; i++)
+        {
+            Rect r = new Rect(x + i * (gw + 8 * s), y, gw, 40 * s);
+            bool on = g == i;
+            bool hover = r.Contains(Event.current.mousePosition);
+            Fill(r, on ? new Color(GroupColors[i].r, GroupColors[i].g, GroupColors[i].b, 0.9f) : new Color(1, 1, 1, hover ? 0.12f : 0.05f), 6 * s);
+            GUI.Label(r, GroupNames[i], new GUIStyle(value) { alignment = TextAnchor.MiddleCenter, fontSize = Mathf.RoundToInt(17 * s) });
+            if (GUI.Button(r, GUIContent.none, GUIStyle.none))
+                Go(i == 0 ? Page.Main : i == 1 ? Page.Garage : Page.Settings);
+        }
+        // Sub-tabs of the active group
+        string[] names; Page[] pages;
+        if (g == 0)
+        {
+            names = new[] { "HOME", "CAREER", "QUICK RACE", "TIME TRIAL" };
+            pages = new[] { Page.Main, GameSession.HasCareer ? Page.CareerHub : Page.CareerNew, Page.QuickRace, Page.TimeTrial };
+        }
+        else if (g == 1) { names = new[] { "CARS & TEAMS", "RECORDS" }; pages = new[] { Page.Garage, Page.Records }; }
+        else { names = new[] { "SETTINGS", "CONTROLS", "CREDITS" }; pages = new[] { Page.Settings, Page.Controls, Page.Credits }; }
+        float tw = (w - (names.Length - 1) * 6 * s) / names.Length;
+        for (int i = 0; i < names.Length; i++)
+        {
+            Rect r = new Rect(x + i * (tw + 6 * s), y + 50 * s, tw, 32 * s);
+            bool on = page == pages[i] || (pages[i] == Page.CareerHub && page == Page.CareerNew) || (pages[i] == Page.CareerNew && page == Page.CareerHub);
+            if (Chip(r, names[i], on)) Go(pages[i]);
+        }
+    }
+
+    // Small live summary on the right: selected team and the next event / record
+    void DrawInfoCard(float s)
+    {
+        if (page == Page.CareerHub || page == Page.Records || page == Page.Credits) return;
+        int teamIdx = Mathf.Clamp(page == Page.CareerNew ? newTeam : quick.team, 0, GameSession.Teams.Length - 1);
+        var team = GameSession.Teams[teamIdx];
+        var trk = GameSession.Tracks[Mathf.Clamp(quick.track, 0, GameSession.Tracks.Length - 1)];
+        Rect r = new Rect(Screen.width - 420 * s, Screen.height - 200 * s, 380 * s, 150 * s);
+        Fill(r, new Color(0.03f, 0.035f, 0.05f, 0.78f), 10 * s);
+        Fill(new Rect(r.x, r.y, 6 * s, r.height), team.primary, 3 * s);
+        Fill(new Rect(r.x + 6 * s, r.y, 3 * s, r.height), team.secondary);
+        GUI.Label(new Rect(r.x + 24 * s, r.y + 12 * s, r.width - 30 * s, 26 * s), "ON THE TURNTABLE", subtitle);
+        GUI.Label(new Rect(r.x + 24 * s, r.y + 38 * s, r.width - 30 * s, 32 * s), team.name.ToUpperInvariant(), new GUIStyle(value) { alignment = TextAnchor.MiddleLeft, fontSize = Mathf.RoundToInt(22 * s) });
+        GUI.Label(new Rect(r.x + 24 * s, r.y + 70 * s, r.width - 30 * s, 22 * s), team.drivers[0] + "  ·  " + team.drivers[1], small);
+        string next = GameSession.HasCareer ? "Career next: " + GameSession.Tracks[GameSession.CareerTrackIndex].grandPrix
+                                            : "Selected circuit: " + trk.name;
+        GUI.Label(new Rect(r.x + 24 * s, r.y + 100 * s, r.width - 30 * s, 22 * s), next, small);
+        float best = GameSession.BestLap(trk.id);
+        GUI.Label(new Rect(r.x + 24 * s, r.y + 122 * s, r.width - 30 * s, 22 * s), "Your record at " + trk.id + ": " + FormatLap(best), small);
     }
 
     void Scrolled(Rect area, float s, float contentHeight, System.Action<float> draw)
@@ -196,32 +288,57 @@ public class MainMenu : MonoBehaviour
         GUI.EndScrollView();
     }
 
+    Texture2D fadeTex;
+
+    // A tall "hero" card for the home page
+    bool Hero(Rect r, string titleText, string text, string tag, Color edge)
+    {
+        bool hover = r.Contains(Event.current.mousePosition);
+        float lift = hover ? 4f * styleScale : 0f;
+        Rect rr = new Rect(r.x, r.y - lift, r.width, r.height);
+        Fill(rr, hover ? new Color(1, 1, 1, 0.13f) : new Color(1, 1, 1, 0.055f), 12 * styleScale);
+        Fill(new Rect(rr.x, rr.yMax - 5 * styleScale, rr.width, 5 * styleScale), new Color(edge.r, edge.g, edge.b, hover ? 1f : 0.75f), 3 * styleScale);
+        GUI.Label(new Rect(rr.x + 18 * styleScale, rr.y + 14 * styleScale, rr.width - 30 * styleScale, 20 * styleScale), tag, new GUIStyle(small) { fontStyle = FontStyle.Bold, normal = { textColor = edge } });
+        var heroTitle = new GUIStyle(cardTitle) { fontSize = Mathf.RoundToInt(21 * styleScale), wordWrap = true };
+        GUI.Label(new Rect(rr.x + 16 * styleScale, rr.y + 36 * styleScale, rr.width - 24 * styleScale, 56 * styleScale), titleText, heroTitle);
+        GUI.Label(new Rect(rr.x + 16 * styleScale, rr.y + 96 * styleScale, rr.width - 24 * styleScale, rr.height - 104 * styleScale), text, cardText);
+        return GUI.Button(rr, GUIContent.none, GUIStyle.none);
+    }
+
     void DrawMain(float x, float y, float w, float s)
     {
-        float h = 78 * s, gap = 10 * s;
         bool has = GameSession.HasCareer;
-        if (Card(new Rect(x, y, w, h), "CAREER", has ? "Continue: " + GameSession.Teams[GameSession.Career.team].name + ", round " + GameSession.Career.round + " - " + GameSession.Tracks[GameSession.CareerTrackIndex].grandPrix
-                                                       : "Pick your team, race the 5-round world tour, earn upgrades, win the title.", Accent))
-            page = has ? Page.CareerHub : Page.CareerNew;
-        y += h + gap;
-        if (Card(new Rect(x, y, w, h), "QUICK RACE", "Any circuit, any team, 22-car grid. Laps, difficulty and tyres your way.", new Color(0.2f, 0.6f, 1f)))
-        { page = Page.QuickRace; scroll = Vector2.zero; }
-        y += h + gap;
-        if (Card(new Rect(x, y, w, h), "TIME TRIAL", "Empty track, just you and the clock. Set lap records on every circuit.", new Color(0.7f, 0.35f, 1f)))
-        { page = Page.TimeTrial; scroll = Vector2.zero; }
-        y += h + gap;
-        if (Card(new Rect(x, y, w, h), "GARAGE", "Look over the eleven 2026 cars and liveries, drivers and car pace.", new Color(0.1f, 0.8f, 0.8f)))
-        { page = Page.Garage; scroll = Vector2.zero; }
-        y += h + gap;
-        if (Card(new Rect(x, y, w, h), "RECORDS", "Your best lap at each circuit.", new Color(1f, 0.45f, 0.2f))) page = Page.Records;
-        y += h + gap;
-        if (Card(new Rect(x, y, w, h), "SETTINGS", "Graphics, performance, sound, camera, HUD and driving assists.", new Color(0.3f, 0.85f, 0.45f)))
-        { page = Page.Settings; scroll = Vector2.zero; }
-        y += h + gap;
-        if (Card(new Rect(x, y, w, h), "CONTROLS", "Keyboard and gamepad buttons.", new Color(1f, 0.75f, 0.2f))) page = Page.Controls;
-        y += h + gap;
-        if (Chip(new Rect(x, y, 160 * s, 44 * s), "CREDITS", false)) { page = Page.Credits; scroll = Vector2.zero; }
-        if (Chip(new Rect(x + 172 * s, y, 160 * s, 44 * s), "QUIT", false))
+        float gap = 12 * s, cw = (w - 2 * gap) / 3f, ch = 210 * s;
+        if (Hero(new Rect(x, y, cw, ch), "CAREER",
+                 has ? GameSession.Teams[GameSession.Career.team].name + ", round " + GameSession.Career.round + ": " + GameSession.Tracks[GameSession.CareerTrackIndex].grandPrix
+                     : "Pick your team, race the world tour, earn upgrades and win the title.",
+                 has ? "CONTINUE" : "NEW SEASON", GroupColors[0]))
+            Go(has ? Page.CareerHub : Page.CareerNew);
+        if (Hero(new Rect(x + cw + gap, y, cw, ch), "QUICK RACE", "Any circuit, any team, 22-car grid. Laps, AI level and tyres your way.", "RACE NOW", new Color(0.2f, 0.6f, 1f)))
+            Go(Page.QuickRace);
+        if (Hero(new Rect(x + 2 * (cw + gap), y, cw, ch), "TIME TRIAL", "Empty track, just you and the clock. Chase your lap records.", "HOT LAP", new Color(0.7f, 0.35f, 1f)))
+            Go(Page.TimeTrial);
+        y += ch + 26 * s;
+
+        // Circuit strip: quick look at the five tracks with your records
+        Section(ref y, x, w, s, "Circuits");
+        float tw = (w - 4 * 8 * s) / 5f;
+        for (int i = 0; i < GameSession.Tracks.Length && i < 5; i++)
+        {
+            var info = GameSession.Tracks[i];
+            Rect r = new Rect(x + i * (tw + 8 * s), y, tw, 118 * s);
+            bool sel = quick.track == i;
+            Fill(r, sel ? new Color(1, 1, 1, 0.14f) : new Color(1, 1, 1, 0.05f), 8 * s);
+            var img = Image(info.preview);
+            if (img != null) GUI.DrawTexture(new Rect(r.x + 4 * s, r.y + 4 * s, r.width - 8 * s, 66 * s), img, ScaleMode.ScaleAndCrop, false, 0, Color.white, 0, 6 * s);
+            GUI.Label(new Rect(r.x + 6 * s, r.y + 72 * s, r.width - 8 * s, 22 * s), info.id.ToUpperInvariant(), new GUIStyle(value) { alignment = TextAnchor.MiddleLeft, fontSize = Mathf.RoundToInt(14 * s) });
+            GUI.Label(new Rect(r.x + 6 * s, r.y + 94 * s, r.width - 8 * s, 20 * s), FormatLap(GameSession.BestLap(info.id)), new GUIStyle(small) { fontSize = Mathf.RoundToInt(12 * s) });
+            if (sel) Fill(new Rect(r.x, r.yMax - 3 * s, r.width, 3 * s), Accent);
+            if (GUI.Button(r, GUIContent.none, GUIStyle.none)) quick.track = i;
+        }
+        y += 136 * s;
+
+        if (Chip(new Rect(x, y, 180 * s, 44 * s), "QUIT GAME", false))
         {
 #if UNITY_EDITOR
             UnityEditor.EditorApplication.isPlaying = false;
@@ -230,7 +347,6 @@ public class MainMenu : MonoBehaviour
 #endif
         }
     }
-
     // ---------- Circuits ----------
 
     readonly Dictionary<string, Texture2D> images = new Dictionary<string, Texture2D>();
